@@ -1,18 +1,6 @@
-import type { Lead } from '../types';
+import type { Lead } from './types';
 
-const HEADERS = [
-  'first_name',
-  'last_name',
-  'address',
-  'city',
-  'state',
-  'zip',
-  'phone',
-  'email',
-  'lead_type',
-  'tags',
-  'source',
-] as const;
+const HEADERS = ['first_name', 'last_name', 'address', 'city', 'state', 'zip', 'phone', 'email', 'lead_type', 'tags', 'source'] as const;
 
 function escapeCsv(value: unknown): string {
   const str = String(value ?? '');

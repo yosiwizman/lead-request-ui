@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseZipCodes, validatePayload } from '../../server/validation';
+import { parseZipCodes, validatePayload } from '../../../api/_lib/validation';
 
 describe('zip parsing', () => {
   it('parses comma and space separated zips', () => {

@@ -1,3 +1,4 @@
+import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { Lead } from '../../src/types';
 import { generateLeads } from '../../src/server/providers/mock';
 import { leadsToCsv } from '../../src/server/csv';
@@ -6,24 +7,14 @@ import { createClient } from '@supabase/supabase-js';
 
 type Json = Record<string, unknown>;
 
-interface Req {
-  method?: string;
-  body?: unknown;
-}
-interface Res {
-  setHeader(name: string, value: string): void;
-  status(code: number): Res;
-  json(body: unknown): Res;
-}
-
-const jsonError = (res: Res, status: number, code: string, message: string, details?: Json) => {
+const jsonError = (res: VercelResponse, status: number, code: string, message: string, details?: Json) => {
   res.status(status).json({
     ok: false,
     error: { code, message, ...(details ? { details } : {}) },
   });
 };
 
-export default async function handler(req: Req, res: Res) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return jsonError(res, 405, 'invalid_method', 'Method not allowed. Use POST.');

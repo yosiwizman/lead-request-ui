@@ -15,10 +15,11 @@ const jsonError = (res: VercelResponse, status: number, code: string, message: s
 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
-    return jsonError(res, 405, 'invalid_method', 'Method not allowed. Use POST.');
-  }
+  try {
+    if (req.method !== 'POST') {
+      res.setHeader('Allow', 'POST');
+      return jsonError(res, 405, 'invalid_method', 'Method not allowed. Use POST.');
+    }
 
   if (!req.body || typeof req.body !== 'object') {
     return jsonError(res, 400, 'invalid_body', 'Request body is required JSON.');
@@ -105,12 +106,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
   }
 
-  return res.status(200).json({
-    ok: true,
-    count: leads.length,
-    bucket,
-    path,
-    signedUrl: signedRes.data.signedUrl,
-    expiresInSeconds,
-  });
+    return res.status(200).json({
+      ok: true,
+      count: leads.length,
+      bucket,
+      path,
+      signedUrl: signedRes.data.signedUrl,
+      expiresInSeconds,
+    });
+  } catch (error) {
+    console.error('Handler error:', error);
+    return res.status(500).json({
+      ok: false,
+      error: {
+        code: 'unhandled_error',
+        message: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined,
+      },
+    });
+  }
 }

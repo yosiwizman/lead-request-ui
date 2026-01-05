@@ -27,3 +27,16 @@ export interface ValidatedPayload {
 }
 
 export type Json = Record<string, unknown>;
+
+// Provider result types
+export type ProviderErrorCode = 'provider_error' | 'provider_no_results';
+
+export interface ProviderError {
+  code: ProviderErrorCode;
+  message: string;
+  details?: Json;
+}
+
+export type ProviderResult =
+  | { ok: true; leads: Lead[] }
+  | { ok: false; error: ProviderError };

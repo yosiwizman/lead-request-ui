@@ -1,7 +1,5 @@
-import type { Lead } from '../../types';
-import type { GenerateInput } from './provider';
+import type { Lead, GenerateInput } from '../types';
 
-// Simple deterministic PRNG based on seed
 function seededRandom(seed: number) {
   let s = seed >>> 0;
   return () => {
@@ -38,9 +36,7 @@ export function generateLeads(input: GenerateInput): Lead[] {
   for (let i = 0; i < count; i++) {
     const first = pick(rand, FIRST_NAMES);
     const last = pick(rand, LAST_NAMES);
-    const leadType =
-      input.scope === 'both' ? (rand() < 0.5 ? 'residential' : 'commercial') : input.scope;
-
+    const leadType = input.scope === 'both' ? (rand() < 0.5 ? 'residential' : 'commercial') : input.scope;
     const zip = input.zips[Math.floor(rand() * input.zips.length)];
 
     out.push({

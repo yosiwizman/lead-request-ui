@@ -63,12 +63,24 @@
 - Default expiration: 24 hours (86,400 seconds).
 - Clients should download promptly; URLs expire and cannot be refreshed without a new request.
 
+## Vercel Bundling
+
+- Vercel serverless functions can only import from within the `api/` directory tree.
+- Shared logic (types, validation, CSV, providers) lives in `api/_lib/`.
+- Do NOT import from `src/` in API routes; Vercel will fail to bundle those imports.
+- Structure:
+  - `api/_lib/types.ts` - Shared types (Lead, LeadScope, etc.)
+  - `api/_lib/validation.ts` - Payload validation
+  - `api/_lib/csv.ts` - CSV generation
+  - `api/_lib/providers/mock.ts` - Mock lead provider
+  - `api/_lib/json.ts` - JSON response helpers
+
 ## Provider Abstraction
 
-- Default provider: `src/server/providers/mock.ts` (deterministic 50 mock leads).
-- Interface: `src/server/providers/provider.ts` (`generateLeads({ leadRequest, zips, scope }) -> Lead[]`).
+- Default provider: `api/_lib/providers/mock.ts` (deterministic 50 mock leads).
+- Interface: `generateLeads({ leadRequest, zips, scope }) -> Lead[]`
 - To add AudienceLab:
-  - Implement `audiencelab.ts` module with the same interface.
+  - Implement `api/_lib/providers/audiencelab.ts` with the same interface.
   - Swap the import in `api/leads/generate.ts` to use AudienceLab.
   - Keep CSV + Storage logic unchanged.
 

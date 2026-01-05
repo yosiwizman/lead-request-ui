@@ -1,24 +1,18 @@
-import type { LeadScope } from './providers/provider';
-
-export interface ValidatedPayload {
-  leadRequest: string;
-  zips: string[];
-  scope: LeadScope;
-}
+import type { LeadScope, ValidatedPayload } from './types';
 
 const SCOPE_VALUES: LeadScope[] = ['residential', 'commercial', 'both'];
 
 export function parseZipCodes(raw: string): string[] {
-  const parts = raw
-    .split(/[\s,]+/)
-    .map((p) => p.trim())
-    .filter(Boolean);
+  const parts = raw.split(/[\s,]+/).map((p) => p.trim()).filter(Boolean);
   if (parts.length === 0) return [];
   const valid = parts.filter((p) => /^[0-9]{5}$/.test(p));
-  return Array.from(new Set(valid)); // dedupe
+  return Array.from(new Set(valid));
 }
 
-export function validatePayload(body: Record<string, unknown>): { ok: true; data: ValidatedPayload } | { ok: false; error: { code: string; message: string; details?: Record<string, unknown> } } {
+export function validatePayload(body: Record<string, unknown>):
+  | { ok: true; data: ValidatedPayload }
+  | { ok: false; error: { code: string; message: string; details?: Record<string, unknown> } } {
+
   const leadRequest = typeof body.leadRequest === 'string' ? body.leadRequest.trim() : '';
   const zipCodesRaw = typeof body.zipCodes === 'string' ? body.zipCodes : '';
   const leadScopeRaw = typeof body.leadScope === 'string' ? body.leadScope.toLowerCase().trim() : '';
@@ -28,7 +22,7 @@ export function validatePayload(body: Record<string, unknown>): { ok: true; data
       ok: false,
       error: {
         code: 'invalid_lead_request',
-        message: 'leadRequest must be 3–200 characters.',
+        message: 'leadRequest must be 3-200 characters.',
         details: { leadRequestLength: leadRequest.length || 0 },
       },
     };
@@ -40,7 +34,7 @@ export function validatePayload(body: Record<string, unknown>): { ok: true; data
       ok: false,
       error: {
         code: 'invalid_zip_codes',
-        message: 'Provide 1–200 valid ZIP codes (5 digits).',
+        message: 'Provide 1-200 valid ZIP codes (5 digits).',
         details: { count: zips.length },
       },
     };
@@ -59,10 +53,6 @@ export function validatePayload(body: Record<string, unknown>): { ok: true; data
 
   return {
     ok: true,
-    data: {
-      leadRequest,
-      zips,
-      scope: leadScopeRaw as LeadScope,
-    },
+    data: { leadRequest, zips, scope: leadScopeRaw as LeadScope },
   };
 }

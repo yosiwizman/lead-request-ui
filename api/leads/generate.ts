@@ -6,24 +6,34 @@ import { createClient } from '@supabase/supabase-js';
 
 type Json = Record<string, unknown>;
 
-const jsonError = (res: any, status: number, code: string, message: string, details?: Json) => {
+interface Req {
+  method?: string;
+  body?: unknown;
+}
+interface Res {
+  setHeader(name: string, value: string): void;
+  status(code: number): Res;
+  json(body: unknown): Res;
+}
+
+const jsonError = (res: Res, status: number, code: string, message: string, details?: Json) => {
   res.status(status).json({
     ok: false,
     error: { code, message, ...(details ? { details } : {}) },
   });
 };
 
-export default async function handler(req: any, res: any) {
+export default async function handler(req: Req, res: Res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return jsonError(res, 405, 'invalid_method', 'Method not allowed. Use POST.');
   }
 
-  if (!req.body) {
+  if (!req.body || typeof req.body !== 'object') {
     return jsonError(res, 400, 'invalid_body', 'Request body is required JSON.');
   }
 
-  const validation = validatePayload(req.body);
+  const validation = validatePayload(req.body as Record<string, unknown>);
   if (!validation.ok) {
     const err = validation.error!;
     return jsonError(res, 400, err.code, err.message, err.details);
@@ -38,7 +48,7 @@ export default async function handler(req: any, res: any) {
   const csv = leadsToCsv(leads);
 
   // Prepare Supabase client (server-side: service role key)
-  const supabaseUrl = process.env.VITE_SUPABASE_URL;
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!supabaseUrl || !serviceKey) {
@@ -49,7 +59,7 @@ export default async function handler(req: any, res: any) {
       'Missing Supabase configuration on server.',
       {
         missing: {
-          VITE_SUPABASE_URL: !supabaseUrl,
+          SUPABASE_URL_or_VITE_SUPABASE_URL: !supabaseUrl,
           SUPABASE_SERVICE_ROLE_KEY: !serviceKey,
         },
       }
@@ -67,12 +77,13 @@ export default async function handler(req: any, res: any) {
   const ts = Date.now();
   const rand = Math.random().toString(36).slice(2, 8);
   const path = `${dateDir}/${ts}-${rand}.csv`;
-  const filePath = `exports/${path}`;
+  const bucket = 'exports';
 
-  // Upload CSV
+  // Upload CSV using Uint8Array (avoids Node Buffer type requirements)
+  const bytes = new TextEncoder().encode(csv);
   const uploadRes = await supabase.storage
-    .from('exports')
-    .upload(path, Buffer.from(csv, 'utf-8'), {
+    .from(bucket)
+    .upload(path, bytes, {
       contentType: 'text/csv',
       upsert: false,
     });
@@ -90,7 +101,7 @@ export default async function handler(req: any, res: any) {
   // Create signed URL (24 hours)
   const expiresInSeconds = 24 * 60 * 60;
   const signedRes = await supabase.storage
-    .from('exports')
+    .from(bucket)
     .createSignedUrl(path, expiresInSeconds);
 
   if (signedRes.error || !signedRes.data) {
@@ -106,7 +117,8 @@ export default async function handler(req: any, res: any) {
   return res.status(200).json({
     ok: true,
     count: leads.length,
-    filePath,
+    bucket,
+    path,
     signedUrl: signedRes.data.signedUrl,
     expiresInSeconds,
   });

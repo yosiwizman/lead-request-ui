@@ -3,9 +3,9 @@
 ## Supabase Storage
 
 ### `exports` bucket
-- **Visibility:** PRIVATE (not public)
-- **Purpose:** Stores generated lead CSV files
-- **Access:** Server-side only via service role key
+- Visibility: PRIVATE (not public)
+- Purpose: Stores generated lead CSV files
+- Access: Server-side only via service role key
 - Files are accessed via signed URLs with expiration
 
 ## Environment Variables
@@ -14,24 +14,29 @@
 | Variable | Description |
 |----------|-------------|
 | `SUPABASE_SERVICE_ROLE_KEY` | Full access key for server-side operations. Lives only in Vercel env vars. |
+| `SUPABASE_URL` | Optional server-only project URL; preferred on server if set. |
 
 ### Client-safe (exposed to browser)
 | Variable | Description |
 |----------|-------------|
-| `VITE_SUPABASE_URL` | Supabase project URL |
+| `VITE_SUPABASE_URL` | Supabase project URL (used on client, and as server fallback) |
 | `VITE_SUPABASE_ANON_KEY` | Public/anon key for client-side auth |
+
+### Server Env Fallback
+- Server reads Supabase URL with fallback: `SUPABASE_URL || VITE_SUPABASE_URL`
+- Service role key: `SUPABASE_SERVICE_ROLE_KEY` (never exposed to the client)
 
 ## Security Rules
 
-1. **Never expose `SUPABASE_SERVICE_ROLE_KEY` to the frontend**
+1. Never expose `SUPABASE_SERVICE_ROLE_KEY` to the frontend
    - Do not prefix with `VITE_`
    - Only use in API routes / Edge Functions
 
-2. **Always use signed URLs for private bucket access**
+2. Always use signed URLs for private bucket access
    - Generate signed URLs server-side
-   - Set reasonable expiration (e.g., 1 hour)
+   - Expiration is set to 24 hours (86,400 seconds)
 
-3. **Validate requests server-side**
+3. Validate requests server-side
    - Don't trust client-provided file paths
    - Sanitize filenames before storage
 
@@ -39,34 +44,28 @@
 
 ## API Endpoint Contract
 
-- **Route:** `POST /api/leads/generate`
-- **Request JSON:** 
-  ```json
+- Route: `POST /api/leads/generate`
+- Request JSON:
   { "leadRequest": "string", "zipCodes": "string", "leadScope": "residential|commercial|both" }
-  ```
-- **Validation:**
+- Validation:
   - `leadRequest` required, 3–200 chars
   - `zipCodes` parsed by comma/space; each ZIP must be 5 digits; 1–200 zips
   - `leadScope` required: `residential` | `commercial` | `both`
-- **Success Response:**
-  ```json
-  { "ok": true, "count": number, "filePath": "exports/<yyyy-mm-dd>/<ts>-<rand>.csv", "signedUrl": "string", "expiresInSeconds": 86400 }
-  ```
-- **Error Response (standard shape):**
-  ```json
+- Success Response:
+  { "ok": true, "count": number, "bucket": "exports", "path": "<yyyy-mm-dd>/<ts>-<rand>.csv", "signedUrl": "string", "expiresInSeconds": 86400 }
+- Error Response (standard shape):
   { "ok": false, "error": { "code": "string", "message": "string", "details": { "...": "..." } } }
-  ```
 
 ## Signed URL Behavior
 
 - Files uploaded to the PRIVATE `exports` bucket.
 - Signed URLs are generated server-side and returned to the client.
-- Default expiration: **24 hours** (86,400 seconds).
-- Clients should download immediately; URLs expire and cannot be refreshed without a new request.
+- Default expiration: 24 hours (86,400 seconds).
+- Clients should download promptly; URLs expire and cannot be refreshed without a new request.
 
 ## Provider Abstraction
 
-- Default provider: `src/server/providers/mock.ts` (deterministic mock leads).
+- Default provider: `src/server/providers/mock.ts` (deterministic 50 mock leads).
 - Interface: `src/server/providers/provider.ts` (`generateLeads({ leadRequest, zips, scope }) -> Lead[]`).
 - To add AudienceLab:
   - Implement `audiencelab.ts` module with the same interface.

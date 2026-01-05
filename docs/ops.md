@@ -15,6 +15,9 @@
 |----------|-------------|
 | `SUPABASE_SERVICE_ROLE_KEY` | Full access key for server-side operations. Lives only in Vercel env vars. |
 | `SUPABASE_URL` | Optional server-only project URL; preferred on server if set. |
+| `LEAD_PROVIDER` | Provider selection: `mock` (default) or `pdl`. |
+| `PDL_API_KEY` | People Data Labs API key. Required when `LEAD_PROVIDER=pdl`. |
+| `PDL_BASE_URL` | Optional PDL API base URL. Defaults to `https://api.peopledatalabs.com`. |
 
 ### Client-safe (exposed to browser)
 | Variable | Description |
@@ -77,12 +80,26 @@
 
 ## Provider Abstraction
 
-- Default provider: `api/_lib/providers/mock.ts` (deterministic 50 mock leads).
-- Interface: `generateLeads({ leadRequest, zips, scope }) -> Lead[]`
-- To add AudienceLab:
-  - Implement `api/_lib/providers/audiencelab.ts` with the same interface.
-  - Swap the import in `api/leads/generate.ts` to use AudienceLab.
-  - Keep CSV + Storage logic unchanged.
+- Provider selection via `LEAD_PROVIDER` env var: `mock` (default) or `pdl`.
+- Interface: `generateLeads({ leadRequest, zips, scope }) -> Promise<ProviderResult>`
+- ProviderResult: `{ ok: true, leads: Lead[] }` or `{ ok: false, error: ProviderError }`
+- No silent fallback: when `pdl` is enabled and fails, returns error (no fallback to mock).
+
+### Mock Provider (`api/_lib/providers/mock.ts`)
+- Deterministic 50 mock leads based on input hash.
+- Always returns `ok: true`.
+- Source field: `mock`.
+
+### PDL Provider (`api/_lib/providers/pdl.ts`)
+- Queries People Data Labs Person Search API.
+- Requires `PDL_API_KEY` env var.
+- Maps PDL person fields to Lead schema.
+- Returns `provider_error` on API failure, `provider_no_results` on empty results.
+- Source field: `pdl`.
+
+### Error Mapping
+- `provider_error` → HTTP 502 (Bad Gateway)
+- `provider_no_results` → HTTP 404 (Not Found)
 
 ## Rationale: Service Role Key Stays Server-only
 

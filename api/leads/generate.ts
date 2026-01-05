@@ -1,7 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
-import type { Lead } from '../_lib/types';
-import { generateLeads } from '../_lib/providers/mock';
+import { generateLeads } from '../_lib/providers';
 import { leadsToCsv } from '../_lib/csv';
 import { validatePayload } from '../_lib/validation';
 import { jsonError } from '../_lib/json';
@@ -24,7 +23,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const { leadRequest, zips, scope } = validation.data;
 
-  const leads: Lead[] = generateLeads({ leadRequest, zips, scope });
+  // Generate leads using configured provider
+  const result = await generateLeads({ leadRequest, zips, scope });
+
+  if (!result.ok) {
+    const err = result.error;
+    // Map provider errors to HTTP 502 (Bad Gateway) for upstream failures
+    // or 404 for no results - client should not retry no_results
+    const status = err.code === 'provider_no_results' ? 404 : 502;
+    return jsonError(res, status, err.code, err.message, err.details);
+  }
+
+  const leads = result.leads;
   const csv = leadsToCsv(leads);
 
   const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;

@@ -1,4 +1,4 @@
-import type { Lead, GenerateInput } from '../types';
+import type { Lead, GenerateInput, ProviderResult } from '../types';
 
 function seededRandom(seed: number) {
   let s = seed >>> 0;
@@ -27,19 +27,19 @@ function pick<T>(rand: () => number, arr: T[]) {
   return arr[Math.floor(rand() * arr.length)];
 }
 
-export function generateLeads(input: GenerateInput): Lead[] {
+export function generateLeads(input: GenerateInput): ProviderResult {
   const seed = makeSeed(input);
   const rand = seededRandom(seed);
   const count = 50;
 
-  const out: Lead[] = [];
+  const leads: Lead[] = [];
   for (let i = 0; i < count; i++) {
     const first = pick(rand, FIRST_NAMES);
     const last = pick(rand, LAST_NAMES);
     const leadType = input.scope === 'both' ? (rand() < 0.5 ? 'residential' : 'commercial') : input.scope;
     const zip = input.zips[Math.floor(rand() * input.zips.length)];
 
-    out.push({
+    leads.push({
       first_name: first,
       last_name: last,
       address: `${Math.floor(rand() * 9999) + 1} ${pick(rand, STREETS)}`,
@@ -50,8 +50,8 @@ export function generateLeads(input: GenerateInput): Lead[] {
       email: `${first.toLowerCase()}.${last.toLowerCase()}@example.com`,
       lead_type: leadType,
       tags: input.leadRequest,
-      source: 'lead-request-ui',
+      source: 'mock',
     });
   }
-  return out;
+  return { ok: true, leads };
 }

@@ -25,4 +25,12 @@ export default tseslint.config(
       ],
     },
   },
+  // Node-specific override for server, API, and tests
+  {
+    files: ['api/**/*.ts', 'src/server/**/*.ts', 'src/__tests__/**/*.ts'],
+    languageOptions: {
+      ecmaVersion: 2020,
+      globals: globals.node,
+    },
+  },
 )

@@ -1,7 +1,5 @@
 import { useState } from 'react'
 import './App.css'
-import { generateMockLeads, downloadCSV } from './services/leadService'
-import type { Lead } from './types'
 
 type Scope = 'Residential' | 'Commercial' | 'Both'
 
@@ -10,8 +8,9 @@ function App() {
   const [zipCodes, setZipCodes] = useState('')
   const [scope, setScope] = useState<Scope>('Residential')
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
-  const [leads, setLeads] = useState<Lead[]>([])
   const [errorMessage, setErrorMessage] = useState('')
+  const [signedUrl, setSignedUrl] = useState<string>('')
+  const [leadCount, setLeadCount] = useState<number>(0)
 
   const handleGenerate = async () => {
     if (!leadRequest.trim() || !zipCodes.trim()) {
@@ -22,20 +21,36 @@ function App() {
 
     setStatus('loading')
     setErrorMessage('')
+    setSignedUrl('')
+    setLeadCount(0)
 
     try {
-      const zips = zipCodes.split(',').map(z => z.trim()).filter(Boolean)
-      const generatedLeads = await generateMockLeads(leadRequest, zips, scope)
-      setLeads(generatedLeads)
+      const res = await fetch('/api/leads/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          leadRequest: leadRequest.trim(),
+          zipCodes: zipCodes,
+          leadScope: scope.toLowerCase(), // 'residential' | 'commercial' | 'both'
+        }),
+      })
+
+      const data = await res.json()
+
+      if (!res.ok || !data.ok) {
+        const msg = data?.error?.message || 'Failed to generate leads'
+        setErrorMessage(msg)
+        setStatus('error')
+        return
+      }
+
+      setLeadCount(data.count || 0)
+      setSignedUrl(data.signedUrl || '')
       setStatus('success')
     } catch {
       setErrorMessage('Failed to generate leads')
       setStatus('error')
     }
-  }
-
-  const handleDownload = () => {
-    downloadCSV(leads)
   }
 
   return (
@@ -99,12 +114,15 @@ function App() {
             <div className="loading">Generating leads...</div>
           )}
 
-          {status === 'success' && leads.length > 0 && (
+          {status === 'success' && signedUrl && (
             <div className="success">
-              <p>Generated {leads.length} leads</p>
-              <button className="btn-download" onClick={handleDownload}>
+              <p>Generated {leadCount} leads</p>
+              <a className="btn-download" href={signedUrl} target="_blank" rel="noopener noreferrer">
                 Download CSV
-              </button>
+              </a>
+              <p style={{ marginTop: '0.75rem', color: '#666' }}>
+                Link expires in 24 hours
+              </p>
             </div>
           )}
         </div>

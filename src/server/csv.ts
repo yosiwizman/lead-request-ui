@@ -24,7 +24,7 @@ export function leadsToCsv(leads: Lead[]): string {
   const lines: string[] = [];
   lines.push(HEADERS.join(','));
   for (const lead of leads) {
-    const row = HEADERS.map((h) => escapeCsv((lead as any)[h])).join(',');
+    const row = HEADERS.map((h) => escapeCsv(lead[h])).join(',');
     lines.push(row);
   }
   return lines.join('\n');

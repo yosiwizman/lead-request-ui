@@ -18,7 +18,7 @@ export function parseZipCodes(raw: string): string[] {
   return Array.from(new Set(valid)); // dedupe
 }
 
-export function validatePayload(body: any): { ok: true; data: ValidatedPayload } | { ok: false; error: { code: string; message: string; details?: Record<string, unknown> } } {
+export function validatePayload(body: Record<string, unknown>): { ok: true; data: ValidatedPayload } | { ok: false; error: { code: string; message: string; details?: Record<string, unknown> } } {
   const leadRequest = typeof body.leadRequest === 'string' ? body.leadRequest.trim() : '';
   const zipCodesRaw = typeof body.zipCodes === 'string' ? body.zipCodes : '';
   const leadScopeRaw = typeof body.leadScope === 'string' ? body.leadScope.toLowerCase().trim() : '';

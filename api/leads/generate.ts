@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
-import { generateLeads } from '../_lib/providers';
+import { generateLeads } from '../_lib/providers/index.js';
 import { leadsToCsv } from '../_lib/csv';
 import { validatePayload } from '../_lib/validation';
 import { jsonError } from '../_lib/json';

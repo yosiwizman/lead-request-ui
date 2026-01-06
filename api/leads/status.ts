@@ -11,6 +11,7 @@ import {
   AudienceLabAsyncError,
   ProviderConfigError,
   type LeadScope,
+  type UseCase,
 } from '../_lib/types.js';
 import { ConfigError } from '../_lib/bytestring.js';
 import { generateRequestId } from '../_lib/audiencelab-response.js';
@@ -62,6 +63,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const leadRequest = typeof body.leadRequest === 'string' ? body.leadRequest.trim() : '';
   const zipCodesRaw = typeof body.zipCodes === 'string' ? body.zipCodes : '';
   const leadScope = typeof body.leadScope === 'string' ? body.leadScope.toLowerCase().trim() : '';
+  const useCase = typeof body.useCase === 'string' ? body.useCase.toLowerCase().trim() as UseCase : 'both';
   const originalRequestId = typeof body.requestId === 'string' ? body.requestId : undefined;
 
   // Validate required fields
@@ -103,6 +105,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     leadRequest,
     zips,
     scope: leadScope as LeadScope,
+    useCase,
   };
 
   // Poll with backoff: up to 3 attempts, 2s apart (max ~6s total within Vercel limits)
@@ -178,6 +181,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           expiresInSeconds,
           audienceId,
           requestId,
+          quality: lastResult.diagnostics,
         });
       }
 

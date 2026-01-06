@@ -127,3 +127,35 @@
 .btn-download:hover {
   background: #238b23;
 }
+
+.quality-summary {
+  margin-top: 1.25rem;
+  padding: 1rem;
+  background: #f8f9fa;
+  border-radius: 6px;
+  text-align: left;
+}
+
+.quality-summary h4 {
+  margin: 0 0 0.75rem;
+  color: #333;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.quality-summary ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.quality-summary li {
+  padding: 0.25rem 0;
+  font-size: 0.875rem;
+  color: #555;
+  border-bottom: 1px solid #eee;
+}
+
+.quality-summary li:last-child {
+  border-bottom: none;
+}

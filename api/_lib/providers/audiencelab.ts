@@ -1,4 +1,4 @@
-import type { Lead, GenerateInput, ProviderResult, LeadScope, LeadQualityDiagnostics } from '../types.js';
+import type { Lead, GenerateInput, ProviderResult, LeadScope, LeadQualityDiagnostics, UseCase } from '../types.js';
 import {
   AudienceLabAuthError,
   AudienceLabUpstreamError,
@@ -140,18 +140,25 @@ function isDncExcluded(contact: AudienceLabContact, scope: LeadScope): boolean {
  */
 interface QualityFilterResult {
   lead: Lead | null;
-  excluded: 'dnc' | 'invalid_email' | 'missing_contact' | null;
+  excluded: 'dnc' | 'invalid_email' | 'missing_phone' | 'missing_contact' | null;
+  missingNameOrAddress: boolean;
 }
 
 /**
  * Map an AudienceLab contact to our Lead format with quality filtering.
  * Uses AudienceLab Fields Guide for optimal field selection.
+ * Applies useCase-based filtering:
+ *   - 'call': require phone present
+ *   - 'email': require valid email present
+ *   - 'both': either phone or email
  */
 export function mapAudienceLabContactToLead(
   contact: AudienceLabContact,
   input: GenerateInput,
   index: number
 ): QualityFilterResult {
+  const useCase: UseCase = input.useCase || 'both';
+  
   // Determine effective scope for this contact
   let effectiveScope: LeadScope;
   if (input.scope === 'both') {
@@ -162,25 +169,47 @@ export function mapAudienceLabContactToLead(
 
   // Check DNC exclusion (B2C only)
   if (isDncExcluded(contact, effectiveScope)) {
-    return { lead: null, excluded: 'dnc' };
+    return { lead: null, excluded: 'dnc', missingNameOrAddress: false };
   }
 
   // Select quality email
   const { email, isValid: emailValid } = selectQualityEmail(contact, effectiveScope);
   
-  // Exclude contacts with explicitly invalid emails
-  if (!emailValid) {
-    return { lead: null, excluded: 'invalid_email' };
+  // For 'email' useCase: require valid email
+  if (useCase === 'email') {
+    if (!email || !emailValid) {
+      return { lead: null, excluded: 'invalid_email', missingNameOrAddress: false };
+    }
+  } else {
+    // For 'call' and 'both': exclude contacts with explicitly invalid emails (but allow missing)
+    if (email && !emailValid) {
+      return { lead: null, excluded: 'invalid_email', missingNameOrAddress: false };
+    }
   }
 
   // Select quality phone
   const phone = selectQualityPhone(contact, effectiveScope);
+
+  // For 'call' useCase: require phone present
+  if (useCase === 'call' && !phone) {
+    return { lead: null, excluded: 'missing_phone', missingNameOrAddress: false };
+  }
+
+  // For 'both' useCase: need at least phone or email
+  if (useCase === 'both' && !phone && !email) {
+    return { lead: null, excluded: 'missing_contact', missingNameOrAddress: false };
+  }
 
   // Select address (B2B: prefer COMPANY_ADDRESS)
   let address = contact.address || contact.street_address || '';
   if (effectiveScope === 'commercial' && contact.COMPANY_ADDRESS) {
     address = contact.COMPANY_ADDRESS;
   }
+
+  // Check for missing name or address (for quality summary, not exclusion)
+  const hasName = !!(contact.first_name || contact.last_name);
+  const hasAddress = !!address;
+  const missingNameOrAddress = !hasName || !hasAddress;
 
   const lead: Lead = {
     first_name: contact.first_name || '',
@@ -196,12 +225,7 @@ export function mapAudienceLabContactToLead(
     source: 'audiencelab',
   };
 
-  // Check if we have at least phone or email
-  if (!phone && !email) {
-    return { lead: null, excluded: 'missing_contact' };
-  }
-
-  return { lead, excluded: null };
+  return { lead, excluded: null, missingNameOrAddress };
 }
 
 /**
@@ -426,10 +450,11 @@ export async function generateLeads(
     // Map contacts to leads with quality filtering (cap at 50)
     const diagnostics: LeadQualityDiagnostics = {
       totalFetched: allContacts.length,
+      kept: 0,
+      filteredMissingPhone: 0,
       filteredInvalidEmail: 0,
       filteredDnc: 0,
-      missingPhoneOrEmail: 0,
-      exported: 0,
+      missingNameOrAddressCount: 0,
     };
     
     const leads: Lead[] = [];
@@ -437,16 +462,20 @@ export async function generateLeads(
       const result = mapAudienceLabContactToLead(allContacts[i], input, i);
       if (result.lead) {
         leads.push(result.lead);
+        if (result.missingNameOrAddress) {
+          diagnostics.missingNameOrAddressCount++;
+        }
       } else {
         // Track exclusion reasons for diagnostics
         switch (result.excluded) {
           case 'invalid_email': diagnostics.filteredInvalidEmail++; break;
           case 'dnc': diagnostics.filteredDnc++; break;
-          case 'missing_contact': diagnostics.missingPhoneOrEmail++; break;
+          case 'missing_phone': diagnostics.filteredMissingPhone++; break;
+          case 'missing_contact': diagnostics.filteredMissingPhone++; break; // Count as missing phone for backwards compat
         }
       }
     }
-    diagnostics.exported = leads.length;
+    diagnostics.kept = leads.length;
 
     // If all contacts were filtered out, still return building (might get more data)
     if (leads.length === 0) {
@@ -580,10 +609,11 @@ export async function fetchAudienceMembers(
     // Apply quality filtering
     const diagnostics: LeadQualityDiagnostics = {
       totalFetched: allContacts.length,
+      kept: 0,
+      filteredMissingPhone: 0,
       filteredInvalidEmail: 0,
       filteredDnc: 0,
-      missingPhoneOrEmail: 0,
-      exported: 0,
+      missingNameOrAddressCount: 0,
     };
     
     const leads: Lead[] = [];
@@ -591,15 +621,19 @@ export async function fetchAudienceMembers(
       const result = mapAudienceLabContactToLead(allContacts[i], input, i);
       if (result.lead) {
         leads.push(result.lead);
+        if (result.missingNameOrAddress) {
+          diagnostics.missingNameOrAddressCount++;
+        }
       } else {
         switch (result.excluded) {
           case 'invalid_email': diagnostics.filteredInvalidEmail++; break;
           case 'dnc': diagnostics.filteredDnc++; break;
-          case 'missing_contact': diagnostics.missingPhoneOrEmail++; break;
+          case 'missing_phone': diagnostics.filteredMissingPhone++; break;
+          case 'missing_contact': diagnostics.filteredMissingPhone++; break;
         }
       }
     }
-    diagnostics.exported = leads.length;
+    diagnostics.kept = leads.length;
 
     if (leads.length === 0) {
       return {

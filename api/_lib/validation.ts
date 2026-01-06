@@ -1,6 +1,7 @@
-import type { LeadScope, ValidatedPayload } from './types';
+import type { LeadScope, UseCase, ValidatedPayload } from './types';
 
 const SCOPE_VALUES: LeadScope[] = ['residential', 'commercial', 'both'];
+const USE_CASE_VALUES: UseCase[] = ['call', 'email', 'both'];
 
 export function parseZipCodes(raw: string): string[] {
   const parts = raw.split(/[\s,]+/).map((p) => p.trim()).filter(Boolean);
@@ -16,6 +17,7 @@ export function validatePayload(body: Record<string, unknown>):
   const leadRequest = typeof body.leadRequest === 'string' ? body.leadRequest.trim() : '';
   const zipCodesRaw = typeof body.zipCodes === 'string' ? body.zipCodes : '';
   const leadScopeRaw = typeof body.leadScope === 'string' ? body.leadScope.toLowerCase().trim() : '';
+  const useCaseRaw = typeof body.useCase === 'string' ? body.useCase.toLowerCase().trim() : 'both';
 
   if (!leadRequest || leadRequest.length < 3 || leadRequest.length > 200) {
     return {
@@ -51,8 +53,19 @@ export function validatePayload(body: Record<string, unknown>):
     };
   }
 
+  if (!USE_CASE_VALUES.includes(useCaseRaw as UseCase)) {
+    return {
+      ok: false,
+      error: {
+        code: 'invalid_use_case',
+        message: 'useCase must be one of: call|email|both.',
+        details: { received: useCaseRaw },
+      },
+    };
+  }
+
   return {
     ok: true,
-    data: { leadRequest, zips, scope: leadScopeRaw as LeadScope },
+    data: { leadRequest, zips, scope: leadScopeRaw as LeadScope, useCase: useCaseRaw as UseCase },
   };
 }

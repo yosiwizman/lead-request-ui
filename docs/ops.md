@@ -162,6 +162,87 @@ Each successful response (200 OK) includes a `quality` object with filtering met
 - `filteredDnc`: Excluded due to DNC (Do Not Call) flag (B2C only)
 - `missingNameOrAddressCount`: Kept contacts that are missing name or address (informational)
 
+### Field Coverage Diagnostics
+
+Each successful response (200 OK) also includes a `fieldCoverage` object that reports field presence statistics BEFORE and AFTER filtering. This helps diagnose data quality issues and determine if enrichment is needed.
+
+```json
+{
+  "fieldCoverage": {
+    "coverageFetched": {
+      "total": 50,
+      "present": {
+        "first_name": 45,
+        "last_name": 43,
+        "address": 12,
+        "city": 48,
+        "state": 50,
+        "zip": 50,
+        "phone": 50,
+        "email": 8
+      },
+      "pct": {
+        "first_name": 90,
+        "last_name": 86,
+        "address": 24,
+        "city": 96,
+        "state": 100,
+        "zip": 100,
+        "phone": 100,
+        "email": 16
+      }
+    },
+    "coverageKept": {
+      "total": 35,
+      "present": { ... },
+      "pct": { ... }
+    }
+  }
+}
+```
+
+**Coverage Blocks:**
+- `coverageFetched`: Field coverage of raw contacts BEFORE quality filtering
+- `coverageKept`: Field coverage of kept leads AFTER quality filtering
+
+**Fields Tracked:** `first_name`, `last_name`, `address`, `city`, `state`, `zip`, `phone`, `email`
+
+**Coverage Structure:**
+- `total`: Number of contacts/leads in this set
+- `present`: Count of non-empty values for each field
+- `pct`: Percentage (0-100) of contacts with each field present
+
+**NO PII:** Coverage only reports counts and percentages—never actual field values.
+
+#### Interpreting Field Coverage
+
+**Healthy coverage:**
+- Phone/Email: >80% is good for call/email campaigns
+- Name: >70% enables personalization
+- Address: >50% supports direct mail
+
+**Low coverage indicators:**
+- 0-5%: Field is effectively absent for this audience
+- 5-25%: Very sparse; consider enrichment
+- 25-50%: Partial coverage; evaluate business impact
+
+#### Enrichment Decision Rules
+
+The UI shows an enrichment warning when ANY of these conditions are true in `coverageFetched`:
+- `pct.first_name` ≤ 5%
+- `pct.address` ≤ 5%
+- `pct.email` ≤ 5%
+
+**When to enrich:**
+1. If phone-only leads are common (phone coverage high, everything else low)
+2. If name/address coverage is insufficient for your campaign type
+3. If email coverage is needed but currently sparse
+
+**Enrichment options:**
+- Data append services (e.g., FullContact, Clearbit)
+- Skip tracing services for phone → name/address lookup
+- Email discovery services
+
 ### CSV Security
 
 **Formula injection prevention:** All CSV values starting with `=`, `+`, `-`, `@`, tab, or carriage return are prefixed with a single quote (`'`) to prevent spreadsheet formula execution.

@@ -1,4 +1,4 @@
-import type { Lead, GenerateInput, ProviderResult, LeadScope, LeadQualityDiagnostics, UseCase } from '../types.js';
+import type { Lead, GenerateInput, ProviderResult, LeadScope, LeadQualityDiagnostics, UseCase, FieldCoverage, FieldCoverageBlock, CoverageFieldName } from '../types.js';
 import {
   AudienceLabAuthError,
   AudienceLabUpstreamError,
@@ -142,6 +142,110 @@ interface QualityFilterResult {
   lead: Lead | null;
   excluded: 'dnc' | 'invalid_email' | 'missing_phone' | 'missing_contact' | null;
   missingNameOrAddress: boolean;
+}
+
+/**
+ * The 8 core fields we track for coverage diagnostics.
+ */
+const COVERAGE_FIELDS: CoverageFieldName[] = [
+  'first_name', 'last_name', 'address', 'city', 'state', 'zip', 'phone', 'email'
+];
+
+/**
+ * Create an empty field coverage block with all counts at zero.
+ */
+function emptyFieldCoverageBlock(): FieldCoverageBlock {
+  const present: Record<CoverageFieldName, number> = {
+    first_name: 0, last_name: 0, address: 0, city: 0, state: 0, zip: 0, phone: 0, email: 0
+  };
+  const pct: Record<CoverageFieldName, number> = {
+    first_name: 0, last_name: 0, address: 0, city: 0, state: 0, zip: 0, phone: 0, email: 0
+  };
+  return { total: 0, present, pct };
+}
+
+/**
+ * Compute field coverage for raw AudienceLab contacts (before filtering).
+ * Returns counts and percentages for each field. NO PII is logged or returned.
+ */
+export function computeContactsCoverage(contacts: AudienceLabContact[], scope: LeadScope): FieldCoverageBlock {
+  if (contacts.length === 0) {
+    return emptyFieldCoverageBlock();
+  }
+
+  const counts: Record<CoverageFieldName, number> = {
+    first_name: 0, last_name: 0, address: 0, city: 0, state: 0, zip: 0, phone: 0, email: 0
+  };
+
+  for (const contact of contacts) {
+    // Check each field for presence (non-empty string)
+    if (contact.first_name?.trim()) counts.first_name++;
+    if (contact.last_name?.trim()) counts.last_name++;
+    
+    // Address: check multiple possible fields
+    const hasAddress = !!(contact.address?.trim() || contact.street_address?.trim() || 
+      (scope === 'commercial' && contact.COMPANY_ADDRESS?.trim()));
+    if (hasAddress) counts.address++;
+    
+    if (contact.city?.trim()) counts.city++;
+    if (contact.state?.trim()) counts.state++;
+    if (contact.zip?.trim() || contact.postal_code?.trim()) counts.zip++;
+    
+    // Phone: check multiple possible fields based on scope
+    const hasPhone = scope === 'commercial'
+      ? !!(contact.SKIPTRACE_B2B_WIRELESS?.trim() || contact.SKIPTRACE_B2B_LANDLINE?.trim() || contact.mobile_phone?.trim() || contact.phone?.trim())
+      : !!(contact.SKIPTRACE_WIRELESS_NUMBERS?.trim() || contact.SKIPTRACE_LANDLINE_NUMBERS?.trim() || contact.mobile_phone?.trim() || contact.phone?.trim());
+    if (hasPhone) counts.phone++;
+    
+    // Email: check multiple possible fields based on scope
+    const hasEmail = scope === 'commercial'
+      ? !!(contact.BUSINESS_EMAIL?.trim() || contact.email?.trim())
+      : !!(contact.PERSONAL_EMAIL?.trim() || contact.email?.trim());
+    if (hasEmail) counts.email++;
+  }
+
+  // Calculate percentages
+  const total = contacts.length;
+  const pct: Record<CoverageFieldName, number> = {} as Record<CoverageFieldName, number>;
+  for (const field of COVERAGE_FIELDS) {
+    pct[field] = Math.round((counts[field] / total) * 100);
+  }
+
+  return { total, present: counts, pct };
+}
+
+/**
+ * Compute field coverage for kept leads (after filtering).
+ * Takes Lead[] array which has already been filtered.
+ */
+export function computeLeadsCoverage(leads: Lead[]): FieldCoverageBlock {
+  if (leads.length === 0) {
+    return emptyFieldCoverageBlock();
+  }
+
+  const counts: Record<CoverageFieldName, number> = {
+    first_name: 0, last_name: 0, address: 0, city: 0, state: 0, zip: 0, phone: 0, email: 0
+  };
+
+  for (const lead of leads) {
+    if (lead.first_name?.trim()) counts.first_name++;
+    if (lead.last_name?.trim()) counts.last_name++;
+    if (lead.address?.trim()) counts.address++;
+    if (lead.city?.trim()) counts.city++;
+    if (lead.state?.trim()) counts.state++;
+    if (lead.zip?.trim()) counts.zip++;
+    if (lead.phone?.trim()) counts.phone++;
+    if (lead.email?.trim()) counts.email++;
+  }
+
+  // Calculate percentages
+  const total = leads.length;
+  const pct: Record<CoverageFieldName, number> = {} as Record<CoverageFieldName, number>;
+  for (const field of COVERAGE_FIELDS) {
+    pct[field] = Math.round((counts[field] / total) * 100);
+  }
+
+  return { total, present: counts, pct };
 }
 
 /**
@@ -447,6 +551,9 @@ export async function generateLeads(
       };
     }
 
+    // Compute field coverage for raw contacts BEFORE filtering
+    const coverageFetched = computeContactsCoverage(allContacts, input.scope);
+
     // Map contacts to leads with quality filtering (cap at 50)
     const diagnostics: LeadQualityDiagnostics = {
       totalFetched: allContacts.length,
@@ -477,6 +584,10 @@ export async function generateLeads(
     }
     diagnostics.kept = leads.length;
 
+    // Compute field coverage for kept leads AFTER filtering
+    const coverageKept = computeLeadsCoverage(leads);
+    const fieldCoverage: FieldCoverage = { coverageFetched, coverageKept };
+
     // If all contacts were filtered out, still return building (might get more data)
     if (leads.length === 0) {
       return {
@@ -489,12 +600,13 @@ export async function generateLeads(
             requestId,
             retryAfterSeconds: 2,
             diagnostics,
+            fieldCoverage,
           },
         },
       };
     }
 
-    return { ok: true, leads, audienceId, requestId, diagnostics };
+    return { ok: true, leads, audienceId, requestId, diagnostics, fieldCoverage };
   } catch (err) {
     // Re-throw typed errors for upstream handling
     if (
@@ -606,6 +718,9 @@ export async function fetchAudienceMembers(
       };
     }
 
+    // Compute field coverage for raw contacts BEFORE filtering
+    const coverageFetched = computeContactsCoverage(allContacts, input.scope);
+
     // Apply quality filtering
     const diagnostics: LeadQualityDiagnostics = {
       totalFetched: allContacts.length,
@@ -635,18 +750,22 @@ export async function fetchAudienceMembers(
     }
     diagnostics.kept = leads.length;
 
+    // Compute field coverage for kept leads AFTER filtering
+    const coverageKept = computeLeadsCoverage(leads);
+    const fieldCoverage: FieldCoverage = { coverageFetched, coverageKept };
+
     if (leads.length === 0) {
       return {
         ok: false,
         error: {
           code: 'provider_building',
           message: 'Contacts found but all filtered out. May still be building.',
-          details: { audienceId, requestId: effectiveRequestId, retryAfterSeconds: 2, diagnostics },
+          details: { audienceId, requestId: effectiveRequestId, retryAfterSeconds: 2, diagnostics, fieldCoverage },
         },
       };
     }
 
-    return { ok: true, leads, audienceId, requestId: effectiveRequestId, diagnostics };
+    return { ok: true, leads, audienceId, requestId: effectiveRequestId, diagnostics, fieldCoverage };
   } catch (err) {
     if (
       err instanceof AudienceLabAuthError ||

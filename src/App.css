@@ -159,3 +159,85 @@
 .quality-summary li:last-child {
   border-bottom: none;
 }
+
+/* Field Coverage Diagnostics */
+.field-coverage {
+  margin-top: 1.25rem;
+  text-align: left;
+}
+
+.field-coverage-toggle {
+  background: none;
+  border: none;
+  padding: 0.5rem 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #4a90d9;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+
+.field-coverage-toggle:hover {
+  color: #3a7bc8;
+}
+
+.field-coverage-content {
+  padding: 1rem;
+  background: #f8f9fa;
+  border-radius: 6px;
+  margin-top: 0.5rem;
+}
+
+.coverage-block {
+  margin-bottom: 1rem;
+}
+
+.coverage-block:last-of-type {
+  margin-bottom: 0;
+}
+
+.coverage-block h5 {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #666;
+}
+
+.coverage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.coverage-table th,
+.coverage-table td {
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+}
+
+.coverage-table th {
+  font-weight: 600;
+  color: #555;
+  background: #f0f0f0;
+}
+
+.coverage-table td {
+  color: #333;
+}
+
+.coverage-table tr.coverage-zero td {
+  color: #c00;
+  font-weight: 500;
+}
+
+.enrichment-notice {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  color: #856404;
+}

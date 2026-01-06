@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { mapAudienceLabContactToLead, lookupZipLocation } from '../../../api/_lib/providers/audiencelab';
-import type { GenerateInput } from '../../../api/_lib/types';
+import { mapAudienceLabContactToLead, lookupZipLocation, computeContactsCoverage, computeLeadsCoverage } from '../../../api/_lib/providers/audiencelab';
+import type { GenerateInput, Lead } from '../../../api/_lib/types';
 
 describe('lookupZipLocation', () => {
   it('returns city/state for known ZIP', () => {
@@ -232,5 +232,212 @@ describe('mapAudienceLabContactToLead with useCase filtering', () => {
     
     expect(result.lead).not.toBeNull();
     expect(result.missingNameOrAddress).toBe(false);
+  });
+});
+
+describe('computeContactsCoverage', () => {
+  it('returns zero coverage for empty array', () => {
+    const result = computeContactsCoverage([], 'residential');
+    
+    expect(result.total).toBe(0);
+    expect(result.present.first_name).toBe(0);
+    expect(result.pct.first_name).toBe(0);
+  });
+
+  it('computes correct counts for contacts with all fields', () => {
+    const contacts = [
+      {
+        first_name: 'John',
+        last_name: 'Doe',
+        address: '123 Main St',
+        city: 'Miami',
+        state: 'FL',
+        zip: '33101',
+        phone: '555-1234',
+        email: 'john@example.com',
+      },
+      {
+        first_name: 'Jane',
+        last_name: 'Smith',
+        address: '456 Oak Ave',
+        city: 'Tampa',
+        state: 'FL',
+        zip: '33602',
+        phone: '555-5678',
+        email: 'jane@example.com',
+      },
+    ];
+
+    const result = computeContactsCoverage(contacts, 'residential');
+    
+    expect(result.total).toBe(2);
+    expect(result.present.first_name).toBe(2);
+    expect(result.present.last_name).toBe(2);
+    expect(result.present.address).toBe(2);
+    expect(result.present.phone).toBe(2);
+    expect(result.present.email).toBe(2);
+    expect(result.pct.first_name).toBe(100);
+    expect(result.pct.phone).toBe(100);
+  });
+
+  it('computes correct percentages for partial coverage', () => {
+    const contacts = [
+      { first_name: 'John', phone: '555-1234' },
+      { phone: '555-5678' }, // no name
+      { first_name: 'Jane' }, // no phone
+      {}, // empty
+    ];
+
+    const result = computeContactsCoverage(contacts, 'residential');
+    
+    expect(result.total).toBe(4);
+    expect(result.present.first_name).toBe(2);
+    expect(result.present.phone).toBe(2);
+    expect(result.pct.first_name).toBe(50);
+    expect(result.pct.phone).toBe(50);
+    expect(result.pct.address).toBe(0);
+    expect(result.pct.email).toBe(0);
+  });
+
+  it('uses B2B fields for commercial scope', () => {
+    const contacts = [
+      { BUSINESS_EMAIL: 'biz@company.com', SKIPTRACE_B2B_WIRELESS: '555-1111' },
+      { email: 'personal@example.com', phone: '555-2222' }, // fallback fields
+    ];
+
+    const result = computeContactsCoverage(contacts, 'commercial');
+    
+    expect(result.total).toBe(2);
+    expect(result.present.email).toBe(2);
+    expect(result.present.phone).toBe(2);
+    expect(result.pct.email).toBe(100);
+  });
+
+  it('uses B2C fields for residential scope', () => {
+    const contacts = [
+      { PERSONAL_EMAIL: 'personal@example.com', SKIPTRACE_WIRELESS_NUMBERS: '555-1111' },
+      { email: 'fallback@example.com', mobile_phone: '555-2222' },
+    ];
+
+    const result = computeContactsCoverage(contacts, 'residential');
+    
+    expect(result.total).toBe(2);
+    expect(result.present.email).toBe(2);
+    expect(result.present.phone).toBe(2);
+  });
+
+  it('detects address from alternate fields', () => {
+    const contacts = [
+      { street_address: '123 Street' },
+      { address: '456 Ave' },
+      { COMPANY_ADDRESS: '789 Corp Blvd' }, // Only counted in commercial scope
+    ];
+
+    const residentialResult = computeContactsCoverage(contacts, 'residential');
+    expect(residentialResult.present.address).toBe(2); // street_address + address
+
+    const commercialResult = computeContactsCoverage(contacts, 'commercial');
+    expect(commercialResult.present.address).toBe(3); // all three
+  });
+
+  it('does NOT log any PII (verify no personal data in result)', () => {
+    const contacts = [
+      {
+        first_name: 'SECRET_FIRST_NAME',
+        last_name: 'SECRET_LAST_NAME',
+        email: 'secret@email.com',
+        phone: '555-SECRET',
+        address: 'SECRET ADDRESS',
+      },
+    ];
+
+    const result = computeContactsCoverage(contacts, 'residential');
+    
+    // Result should only contain counts, not actual values
+    const resultStr = JSON.stringify(result);
+    expect(resultStr).not.toContain('SECRET');
+    expect(resultStr).not.toContain('email.com');
+    
+    // Verify structure has no PII fields
+    expect(result).toHaveProperty('total');
+    expect(result).toHaveProperty('present');
+    expect(result).toHaveProperty('pct');
+    expect(typeof result.present.first_name).toBe('number');
+    expect(typeof result.pct.first_name).toBe('number');
+  });
+});
+
+describe('computeLeadsCoverage', () => {
+  it('returns zero coverage for empty array', () => {
+    const result = computeLeadsCoverage([]);
+    
+    expect(result.total).toBe(0);
+    expect(result.present.first_name).toBe(0);
+    expect(result.pct.first_name).toBe(0);
+  });
+
+  it('computes correct counts for leads', () => {
+    const leads: Lead[] = [
+      {
+        first_name: 'John',
+        last_name: 'Doe',
+        address: '123 Main St',
+        city: 'Miami',
+        state: 'FL',
+        zip: '33101',
+        phone: '555-1234',
+        email: 'john@example.com',
+        lead_type: 'residential',
+        tags: 'roofing',
+        source: 'audiencelab',
+      },
+      {
+        first_name: '',
+        last_name: '',
+        address: '',
+        city: '',
+        state: '',
+        zip: '',
+        phone: '555-5678',
+        email: '',
+        lead_type: 'residential',
+        tags: 'roofing',
+        source: 'audiencelab',
+      },
+    ];
+
+    const result = computeLeadsCoverage(leads);
+    
+    expect(result.total).toBe(2);
+    expect(result.present.first_name).toBe(1);
+    expect(result.present.phone).toBe(2);
+    expect(result.pct.first_name).toBe(50);
+    expect(result.pct.phone).toBe(100);
+    expect(result.pct.email).toBe(50);
+  });
+
+  it('does NOT include PII in result', () => {
+    const leads: Lead[] = [
+      {
+        first_name: 'SECRET_NAME',
+        last_name: 'SECRET_LAST',
+        address: 'SECRET_ADDR',
+        city: 'SECRET_CITY',
+        state: 'SS',
+        zip: '99999',
+        phone: 'SECRET_PHONE',
+        email: 'secret@domain.com',
+        lead_type: 'residential',
+        tags: 'test',
+        source: 'audiencelab',
+      },
+    ];
+
+    const result = computeLeadsCoverage(leads);
+    const resultStr = JSON.stringify(result);
+    
+    expect(resultStr).not.toContain('SECRET');
+    expect(resultStr).not.toContain('domain.com');
+    expect(resultStr).not.toContain('99999');
   });
 });

@@ -4,6 +4,7 @@ import { generateLeads } from '../_lib/providers/index.js';
 import { leadsToCsv } from '../_lib/csv.js';
 import { validatePayload } from '../_lib/validation.js';
 import { jsonError } from '../_lib/json.js';
+import { AudienceLabAuthError, AudienceLabUpstreamError } from '../_lib/types.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
@@ -24,7 +25,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const { leadRequest, zips, scope } = validation.data;
 
   // Generate leads using configured provider
-  const result = await generateLeads({ leadRequest, zips, scope });
+  let result;
+  try {
+    result = await generateLeads({ leadRequest, zips, scope });
+  } catch (err) {
+    // Handle typed AudienceLab errors with standardized response
+    if (err instanceof AudienceLabAuthError) {
+      return jsonError(
+        res,
+        502,
+        err.code,
+        'Unauthorized: invalid key, wrong workspace, revoked key, or missing permissions.',
+        { ...err.toSafeContext(), hint: err.hint }
+      );
+    }
+    if (err instanceof AudienceLabUpstreamError) {
+      return jsonError(
+        res,
+        502,
+        err.code,
+        'AudienceLab upstream service error.',
+        err.toSafeContext()
+      );
+    }
+    // Unknown errors
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    return jsonError(res, 500, 'internal_error', message);
+  }
 
   if (!result.ok) {
     const err = result.error;

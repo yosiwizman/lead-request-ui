@@ -9,7 +9,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "smoke:audiencelab": "npx tsx scripts/audiencelab-smoke.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.89.0",

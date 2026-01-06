@@ -15,9 +15,9 @@
 |----------|-------------|
 | `SUPABASE_SERVICE_ROLE_KEY` | Full access key for server-side operations. Lives only in Vercel env vars. |
 | `SUPABASE_URL` | Optional server-only project URL; preferred on server if set. |
-| `LEAD_PROVIDER` | Provider selection: `mock` (default) or `pdl`. |
-| `PDL_API_KEY` | People Data Labs API key. Required when `LEAD_PROVIDER=pdl`. |
-| `PDL_BASE_URL` | Optional PDL API base URL. Defaults to `https://api.peopledatalabs.com`. |
+| `LEAD_PROVIDER` | Provider selection: `mock` (default) or `audiencelab`. |
+| `AUDIENCELAB_API_KEY` | AudienceLab API key. Required when `LEAD_PROVIDER=audiencelab`. |
+| `AUDIENCELAB_BASE_URL` | Optional AudienceLab API base URL. Defaults to `https://api.audiencelab.io`. |
 
 ### Client-safe (exposed to browser)
 | Variable | Description |
@@ -76,26 +76,30 @@
   - `api/_lib/validation.ts` - Payload validation
   - `api/_lib/csv.ts` - CSV generation
   - `api/_lib/providers/mock.ts` - Mock lead provider
+  - `api/_lib/providers/audiencelab.ts` - AudienceLab lead provider
   - `api/_lib/json.ts` - JSON response helpers
 
 ## Provider Abstraction
 
-- Provider selection via `LEAD_PROVIDER` env var: `mock` (default) or `pdl`.
+- Provider selection via `LEAD_PROVIDER` env var: `mock` (default) or `audiencelab`.
 - Interface: `generateLeads({ leadRequest, zips, scope }) -> Promise<ProviderResult>`
 - ProviderResult: `{ ok: true, leads: Lead[] }` or `{ ok: false, error: ProviderError }`
-- No silent fallback: when `pdl` is enabled and fails, returns error (no fallback to mock).
+- Fallback behavior: when `LEAD_PROVIDER=audiencelab` but `AUDIENCELAB_API_KEY` is missing, silently falls back to mock.
+- No silent fallback on runtime errors: when audiencelab is enabled and API call fails, returns error.
 
 ### Mock Provider (`api/_lib/providers/mock.ts`)
 - Deterministic 50 mock leads based on input hash.
 - Always returns `ok: true`.
 - Source field: `mock`.
 
-### PDL Provider (`api/_lib/providers/pdl.ts`)
-- Queries People Data Labs Person Search API.
-- Requires `PDL_API_KEY` env var.
-- Maps PDL person fields to Lead schema.
+### AudienceLab Provider (`api/_lib/providers/audiencelab.ts`)
+- Creates audience via AudienceLab API, then fetches audience members.
+- Requires `AUDIENCELAB_API_KEY` env var.
+- Uses ZIP code lookup to enhance geographic targeting.
+- Maps AudienceLab contact fields to Lead schema.
 - Returns `provider_error` on API failure, `provider_no_results` on empty results.
-- Source field: `pdl`.
+- Source field: `audiencelab`.
+- Caps results at 50 leads per request.
 
 ### Error Mapping
 - `provider_error` → HTTP 502 (Bad Gateway)

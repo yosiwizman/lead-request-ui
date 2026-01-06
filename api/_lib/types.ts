@@ -14,16 +14,26 @@ export interface Lead {
 
 export type LeadScope = 'residential' | 'commercial' | 'both';
 
+/**
+ * Use case for lead quality filtering.
+ * - 'call': Require phone present
+ * - 'email': Require validated email present
+ * - 'both': Either phone or email (default)
+ */
+export type UseCase = 'call' | 'email' | 'both';
+
 export interface GenerateInput {
   leadRequest: string;
   zips: string[];
   scope: LeadScope;
+  useCase?: UseCase;
 }
 
 export interface ValidatedPayload {
   leadRequest: string;
   zips: string[];
   scope: LeadScope;
+  useCase: UseCase;
 }
 
 export type Json = Record<string, unknown>;
@@ -212,10 +222,23 @@ export interface ProviderError {
  */
 export interface LeadQualityDiagnostics {
   totalFetched: number;
+  kept: number;
+  filteredMissingPhone: number;
   filteredInvalidEmail: number;
   filteredDnc: number;
-  missingPhoneOrEmail: number;
-  exported: number;
+  missingNameOrAddressCount: number;
+}
+
+/**
+ * Quality summary for API response (exposed to client).
+ */
+export interface QualitySummary {
+  totalFetched: number;
+  kept: number;
+  filteredMissingPhone: number;
+  filteredInvalidEmail: number;
+  filteredDnc: number;
+  missingNameOrAddressCount: number;
 }
 
 export type ProviderResult =

@@ -50,17 +50,23 @@
 ### POST /api/leads/generate
 
 - Request JSON:
-  { "leadRequest": "string", "zipCodes": "string", "leadScope": "residential|commercial|both" }
+  { "leadRequest": "string", "zipCodes": "string", "leadScope": "residential|commercial|both", "useCase": "call|email|both" }
 - Validation:
   - `leadRequest` required, 3–200 chars
   - `zipCodes` parsed by comma/space; each ZIP must be 5 digits; 1–200 zips
   - `leadScope` required: `residential` | `commercial` | `both`
+  - `useCase` optional (defaults to `both`): `call` | `email` | `both`
+
+**Quality Preset (useCase) Behavior:**
+- `call`: Requires phone present; contacts without phone are filtered out
+- `email`: Requires validated email present; contacts without valid email are filtered out
+- `both`: Either phone or email required (default, most permissive)
 
 **Responses:**
 - **200 OK** (immediate success):
-  { "ok": true, "count": number, "bucket": "exports", "path": "...", "signedUrl": "string", "expiresInSeconds": 86400, "audienceId": "string", "requestId": "string" }
+  { "ok": true, "count": number, "bucket": "exports", "path": "...", "signedUrl": "string", "expiresInSeconds": 86400, "audienceId": "string", "requestId": "string", "quality": {...} }
 - **202 Accepted** (audience building async):
-  { "ok": false, "error": { "code": "provider_building", "message": "...", "details": { "audienceId": "...", "leadRequest": "...", "zipCodes": "...", "leadScope": "...", "requestId": "...", "retryAfterSeconds": 2 } } }
+  { "ok": false, "error": { "code": "provider_building", "message": "...", "details": { "audienceId": "...", "leadRequest": "...", "zipCodes": "...", "leadScope": "...", "useCase": "...", "requestId": "...", "retryAfterSeconds": 2 } } }
 - **404 Not Found** (no results after building complete):
   { "ok": false, "error": { "code": "provider_no_results", "message": "...", "details": {...} } }
 - **4xx/5xx** (other errors): Standard error shape.
@@ -70,8 +76,8 @@
 Used to poll for results after generate returns 202.
 
 - Request JSON:
-  { "audienceId": "string", "leadRequest": "string", "zipCodes": "string", "leadScope": "string", "requestId": "string" }
-- **200 OK**: Success with signedUrl (same as generate success).
+  { "audienceId": "string", "leadRequest": "string", "zipCodes": "string", "leadScope": "string", "useCase": "string", "requestId": "string" }
+- **200 OK**: Success with signedUrl and quality summary (same as generate success).
 - **202 Accepted**: Still building. Client should poll again.
 - **404 Not Found**: Definitively no results.
 
@@ -132,14 +138,29 @@ Based on AudienceLab Fields Guide for high-quality lead data:
 - **Phone**: `SKIPTRACE_WIRELESS_NUMBERS` > `SKIPTRACE_LANDLINE_NUMBERS` > `mobile_phone` > `phone`
 - **DNC Filter**: Exclude contacts where `DNC` = "Y"
 
-### Quality Diagnostics
+### Quality Summary Response
 
-Each successful response includes diagnostics (logged, not exposed to client PII):
-- `totalFetched`: Raw contacts from AudienceLab
-- `filteredInvalidEmail`: Excluded due to invalid email validation status
-- `filteredDnc`: Excluded due to DNC flag (B2C only)
-- `missingPhoneOrEmail`: Excluded due to no contact info
-- `exported`: Final count in CSV
+Each successful response (200 OK) includes a `quality` object with filtering metrics:
+```json
+{
+  "quality": {
+    "totalFetched": 50,
+    "kept": 35,
+    "filteredMissingPhone": 8,
+    "filteredInvalidEmail": 3,
+    "filteredDnc": 2,
+    "missingNameOrAddressCount": 5
+  }
+}
+```
+
+**Field Descriptions:**
+- `totalFetched`: Raw contacts retrieved from AudienceLab
+- `kept`: Contacts included in the final CSV export
+- `filteredMissingPhone`: Excluded due to missing phone (applies to `useCase=call`)
+- `filteredInvalidEmail`: Excluded due to missing/invalid email (applies to `useCase=email`)
+- `filteredDnc`: Excluded due to DNC (Do Not Call) flag (B2C only)
+- `missingNameOrAddressCount`: Kept contacts that are missing name or address (informational)
 
 ### CSV Security
 
@@ -211,6 +232,26 @@ The smoke test calls `GET /audiences?page=1&page_size=1` and reports:
   - Local terminal for smoke testing
   - `.env.local` (gitignored) for local dev
 - Typed errors (`AudienceLabAuthError`) never include the key in message or context
+
+### Troubleshooting: Filtered Leads (Few Results)
+
+**Symptom:**
+User sees fewer leads than expected in the Quality Summary.
+
+**Cause:**
+The `useCase` filter is removing contacts that don't meet the criteria:
+- `call`: Contacts without phone are filtered
+- `email`: Contacts without validated email are filtered
+- DNC-flagged contacts are always filtered for B2C
+
+**Resolution:**
+1. Check the Quality Summary breakdown to see why leads were filtered
+2. Try a different `useCase` preset:
+   - Use "Call + Email (Best available)" for maximum results
+   - Use "Call Leads" only when phone is essential
+   - Use "Email Leads" only when validated email is essential
+3. If `filteredDnc` is high, consider switching to Commercial (B2B) target
+4. If `missingNameOrAddressCount` is high, the data quality from AudienceLab may be limited for that query
 
 ### Troubleshooting: Audience Building (202)
 

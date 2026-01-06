@@ -25,6 +25,7 @@ describe('mapAudienceLabContactToLead', () => {
     leadRequest: 'roofing',
     zips: ['33101'],
     scope: 'residential',
+    useCase: 'both',
   };
 
   it('maps full AudienceLab contact to Lead', () => {
@@ -73,7 +74,7 @@ describe('mapAudienceLabContactToLead', () => {
     expect(result.lead!.zip).toBe('33130');
   });
 
-  it('excludes contacts with no phone or email', () => {
+  it('excludes contacts with no phone or email for useCase=both', () => {
     const contact = {};
 
     const result = mapAudienceLabContactToLead(contact, baseInput, 0);
@@ -154,5 +155,82 @@ describe('mapAudienceLabContactToLead', () => {
     const commercialInput: GenerateInput = { ...baseInput, scope: 'commercial' };
     const result = mapAudienceLabContactToLead(contact, commercialInput, 0);
     expect(result.lead).not.toBeNull();
+  });
+});
+
+describe('mapAudienceLabContactToLead with useCase filtering', () => {
+  const baseInput: GenerateInput = {
+    leadRequest: 'roofing',
+    zips: ['33101'],
+    scope: 'residential',
+    useCase: 'both',
+  };
+
+  it('useCase=call: excludes contacts without phone', () => {
+    const contact = { first_name: 'Test', email: 'test@example.com' };
+    const input: GenerateInput = { ...baseInput, useCase: 'call' };
+    const result = mapAudienceLabContactToLead(contact, input, 0);
+    
+    expect(result.lead).toBeNull();
+    expect(result.excluded).toBe('missing_phone');
+  });
+
+  it('useCase=call: includes contacts with phone', () => {
+    const contact = { first_name: 'Test', phone: '************' };
+    const input: GenerateInput = { ...baseInput, useCase: 'call' };
+    const result = mapAudienceLabContactToLead(contact, input, 0);
+    
+    expect(result.lead).not.toBeNull();
+    expect(result.lead!.phone).toBe('************');
+  });
+
+  it('useCase=email: excludes contacts without email', () => {
+    const contact = { first_name: 'Test', phone: '************' };
+    const input: GenerateInput = { ...baseInput, useCase: 'email' };
+    const result = mapAudienceLabContactToLead(contact, input, 0);
+    
+    expect(result.lead).toBeNull();
+    expect(result.excluded).toBe('invalid_email');
+  });
+
+  it('useCase=email: includes contacts with valid email', () => {
+    const contact = { first_name: 'Test', email: 'test@example.com' };
+    const input: GenerateInput = { ...baseInput, useCase: 'email' };
+    const result = mapAudienceLabContactToLead(contact, input, 0);
+    
+    expect(result.lead).not.toBeNull();
+    expect(result.lead!.email).toBe('test@example.com');
+  });
+
+  it('useCase=both: includes contacts with only phone', () => {
+    const contact = { first_name: 'Test', phone: '************' };
+    const input: GenerateInput = { ...baseInput, useCase: 'both' };
+    const result = mapAudienceLabContactToLead(contact, input, 0);
+    
+    expect(result.lead).not.toBeNull();
+  });
+
+  it('useCase=both: includes contacts with only email', () => {
+    const contact = { first_name: 'Test', email: 'test@example.com' };
+    const input: GenerateInput = { ...baseInput, useCase: 'both' };
+    const result = mapAudienceLabContactToLead(contact, input, 0);
+    
+    expect(result.lead).not.toBeNull();
+  });
+
+  it('tracks missingNameOrAddress flag', () => {
+    const contact = { phone: '************' }; // no name, no address
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
+    
+    expect(result.lead).not.toBeNull();
+    expect(result.missingNameOrAddress).toBe(true);
+  });
+
+  it('missingNameOrAddress is false when name and address present', () => {
+    const contact = { first_name: 'Test', address: '123 Main St', phone: '************' };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
+    
+    expect(result.lead).not.toBeNull();
+    expect(result.missingNameOrAddress).toBe(false);
   });
 });

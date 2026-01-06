@@ -2,13 +2,24 @@ import { useState, useRef, useCallback } from 'react'
 import './App.css'
 
 type Scope = 'Residential' | 'Commercial' | 'Both'
+type UseCase = 'call' | 'email' | 'both'
 type AppStatus = 'idle' | 'loading' | 'building' | 'success' | 'error'
+
+interface QualitySummary {
+  totalFetched: number
+  kept: number
+  filteredMissingPhone: number
+  filteredInvalidEmail: number
+  filteredDnc: number
+  missingNameOrAddressCount: number
+}
 
 interface BuildingDetails {
   audienceId: string
   leadRequest: string
   zipCodes: string
   leadScope: string
+  useCase: UseCase
   requestId: string
 }
 
@@ -19,10 +30,12 @@ function App() {
   const [leadRequest, setLeadRequest] = useState('')
   const [zipCodes, setZipCodes] = useState('')
   const [scope, setScope] = useState<Scope>('Residential')
+  const [useCase, setUseCase] = useState<UseCase>('both')
   const [status, setStatus] = useState<AppStatus>('idle')
   const [errorMessage, setErrorMessage] = useState('')
   const [signedUrl, setSignedUrl] = useState<string>('')
   const [leadCount, setLeadCount] = useState<number>(0)
+  const [qualitySummary, setQualitySummary] = useState<QualitySummary | null>(null)
   const [buildingDetails, setBuildingDetails] = useState<BuildingDetails | null>(null)
   const [pollElapsed, setPollElapsed] = useState(0)
   
@@ -57,6 +70,7 @@ function App() {
           leadRequest: details.leadRequest,
           zipCodes: details.zipCodes,
           leadScope: details.leadScope,
+          useCase: details.useCase,
           requestId: details.requestId,
         }),
       })
@@ -68,6 +82,7 @@ function App() {
         stopPolling()
         setLeadCount(data.count || 0)
         setSignedUrl(data.signedUrl || '')
+        setQualitySummary(data.quality || null)
         setStatus('success')
         setBuildingDetails(null)
         return
@@ -123,6 +138,7 @@ function App() {
     setErrorMessage('')
     setSignedUrl('')
     setLeadCount(0)
+    setQualitySummary(null)
     setBuildingDetails(null)
 
     try {
@@ -133,6 +149,7 @@ function App() {
           leadRequest: leadRequest.trim(),
           zipCodes: zipCodes,
           leadScope: scope.toLowerCase(),
+          useCase: useCase,
         }),
       })
 
@@ -145,6 +162,7 @@ function App() {
           leadRequest: data.error.details?.leadRequest || leadRequest.trim(),
           zipCodes: data.error.details?.zipCodes || zipCodes,
           leadScope: data.error.details?.leadScope || scope.toLowerCase(),
+          useCase: data.error.details?.useCase || useCase,
           requestId: data.error.details?.requestId || '',
         }
         startPolling(details)
@@ -163,6 +181,7 @@ function App() {
       // Immediate success
       setLeadCount(data.count || 0)
       setSignedUrl(data.signedUrl || '')
+      setQualitySummary(data.quality || null)
       setStatus('success')
     } catch {
       setErrorMessage('Failed to generate leads')
@@ -201,14 +220,27 @@ function App() {
           </div>
 
           <div className="form-group">
-            <label htmlFor="scope">Scope</label>
+            <label htmlFor="useCase">Quality Preset</label>
+            <select
+              id="useCase"
+              value={useCase}
+              onChange={(e) => setUseCase(e.target.value as UseCase)}
+            >
+              <option value="call">Call Leads (Phone-first)</option>
+              <option value="email">Email Leads (Validated email only)</option>
+              <option value="both">Call + Email (Best available)</option>
+            </select>
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="scope">Target</label>
             <select
               id="scope"
               value={scope}
               onChange={(e) => setScope(e.target.value as Scope)}
             >
-              <option value="Residential">Residential</option>
-              <option value="Commercial">Commercial</option>
+              <option value="Residential">Residential (B2C)</option>
+              <option value="Commercial">Commercial (B2B)</option>
               <option value="Both">Both</option>
             </select>
           </div>
@@ -246,6 +278,29 @@ function App() {
               <a className="btn-download" href={signedUrl} target="_blank" rel="noopener noreferrer">
                 Download CSV
               </a>
+              
+              {qualitySummary && (
+                <div className="quality-summary">
+                  <h4>Quality Summary</h4>
+                  <ul>
+                    <li>Total fetched: {qualitySummary.totalFetched}</li>
+                    <li>Kept: {qualitySummary.kept}</li>
+                    {qualitySummary.filteredMissingPhone > 0 && (
+                      <li>Filtered (no phone): {qualitySummary.filteredMissingPhone}</li>
+                    )}
+                    {qualitySummary.filteredInvalidEmail > 0 && (
+                      <li>Filtered (invalid email): {qualitySummary.filteredInvalidEmail}</li>
+                    )}
+                    {qualitySummary.filteredDnc > 0 && (
+                      <li>Filtered (DNC): {qualitySummary.filteredDnc}</li>
+                    )}
+                    {qualitySummary.missingNameOrAddressCount > 0 && (
+                      <li>Missing name/address: {qualitySummary.missingNameOrAddressCount}</li>
+                    )}
+                  </ul>
+                </div>
+              )}
+              
               <p style={{ marginTop: '0.75rem', color: '#666' }}>
                 Link expires in 24 hours
               </p>

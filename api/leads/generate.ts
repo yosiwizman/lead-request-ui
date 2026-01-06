@@ -40,14 +40,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return jsonError(res, 400, err.code, err.message, err.details);
   }
 
-  const { leadRequest, zips, scope } = validation.data;
+  const { leadRequest, zips, scope, useCase } = validation.data;
   
-  logEvent('generate_start', { requestId, zipCount: zips.length, scope });
+  logEvent('generate_start', { requestId, zipCount: zips.length, scope, useCase });
 
   // Generate leads using configured provider
   let result;
   try {
-    result = await generateLeads({ leadRequest, zips, scope });
+    result = await generateLeads({ leadRequest, zips, scope, useCase });
   } catch (err) {
     // Handle provider configuration errors (missing API key when audiencelab expected)
     if (err instanceof ProviderConfigError) {
@@ -137,6 +137,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             leadRequest,
             zipCodes: zips.join(','),
             leadScope: scope,
+            useCase,
             requestId,
             retryAfterSeconds: 2,
           },
@@ -214,5 +215,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     expiresInSeconds,
     audienceId: result.audienceId,
     requestId,
+    quality: result.diagnostics,
   });
 }

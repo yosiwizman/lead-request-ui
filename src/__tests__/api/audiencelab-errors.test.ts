@@ -159,13 +159,13 @@ describe('AudienceLab provider error handling', () => {
     await expect(generateLeads(testInput)).rejects.toThrow(AudienceLabAuthError);
   });
 
-  it('returns provider_no_results when no members found', async () => {
+  it('returns provider_building when no members found (audience still populating)', async () => {
     // Successful audience creation
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: async () => ({ id: 'audience-123' }),
     });
-    // Members fetch returns empty
+    // Members fetch returns empty (audience is building)
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: async () => ({ data: [] }),
@@ -175,8 +175,8 @@ describe('AudienceLab provider error handling', () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error.code).toBe('provider_no_results');
-      expect(result.error.message).toContain('No leads found');
+      expect(result.error.code).toBe('provider_building');
+      expect(result.error.message).toContain('Audience is building');
     }
   });
 
@@ -198,13 +198,13 @@ describe('AudienceLab provider error handling', () => {
       ok: true,
       json: async () => ({ id: 'audience-123' }),
     });
-    // Successful members fetch
+    // Successful members fetch (contacts have email so they pass quality filter)
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: async () => ({
         data: [
-          { first_name: 'John', last_name: 'Doe', email: 'john@example.com' },
-          { first_name: 'Jane', last_name: 'Smith', email: 'jane@example.com' },
+          { first_name: 'John', last_name: 'Doe', email: 'john@example.com', phone: '305-555-1234' },
+          { first_name: 'Jane', last_name: 'Smith', email: 'jane@example.com', phone: '305-555-5678' },
         ],
       }),
     });
@@ -228,7 +228,7 @@ describe('AudienceLab provider error handling', () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: async () => ({
-        members: [{ first_name: 'Bob', last_name: 'Builder' }],
+        members: [{ first_name: 'Bob', last_name: 'Builder', email: 'bob@example.com' }],
       }),
     });
 
@@ -242,9 +242,11 @@ describe('AudienceLab provider error handling', () => {
   });
 
   it('caps leads at 50', async () => {
+    // Contacts need email/phone to pass quality filter
     const manyContacts = Array.from({ length: 100 }, (_, i) => ({
       first_name: `User${i}`,
       last_name: `Test`,
+      email: `user${i}@example.com`,
     }));
 
     mockFetch.mockResolvedValueOnce({

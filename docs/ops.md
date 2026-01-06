@@ -47,16 +47,47 @@
 
 ## API Endpoint Contract
 
-- Route: `POST /api/leads/generate`
+### POST /api/leads/generate
+
 - Request JSON:
   { "leadRequest": "string", "zipCodes": "string", "leadScope": "residential|commercial|both" }
 - Validation:
   - `leadRequest` required, 3–200 chars
   - `zipCodes` parsed by comma/space; each ZIP must be 5 digits; 1–200 zips
   - `leadScope` required: `residential` | `commercial` | `both`
-- Success Response:
-  { "ok": true, "count": number, "bucket": "exports", "path": "<yyyy-mm-dd>/<ts>-<rand>.csv", "signedUrl": "string", "expiresInSeconds": 86400 }
-- Error Response (standard shape):
+
+**Responses:**
+- **200 OK** (immediate success):
+  { "ok": true, "count": number, "bucket": "exports", "path": "...", "signedUrl": "string", "expiresInSeconds": 86400, "audienceId": "string", "requestId": "string" }
+- **202 Accepted** (audience building async):
+  { "ok": false, "error": { "code": "provider_building", "message": "...", "details": { "audienceId": "...", "leadRequest": "...", "zipCodes": "...", "leadScope": "...", "requestId": "...", "retryAfterSeconds": 2 } } }
+- **404 Not Found** (no results after building complete):
+  { "ok": false, "error": { "code": "provider_no_results", "message": "...", "details": {...} } }
+- **4xx/5xx** (other errors): Standard error shape.
+
+### POST /api/leads/status (Polling Endpoint)
+
+Used to poll for results after generate returns 202.
+
+- Request JSON:
+  { "audienceId": "string", "leadRequest": "string", "zipCodes": "string", "leadScope": "string", "requestId": "string" }
+- **200 OK**: Success with signedUrl (same as generate success).
+- **202 Accepted**: Still building. Client should poll again.
+- **404 Not Found**: Definitively no results.
+
+The status endpoint polls internally with backoff (up to 3 attempts, ~6s max) before returning.
+
+### Client-Side Polling Flow
+
+1. Call `POST /api/leads/generate`
+2. If 200: Success, show download link.
+3. If 202: Start polling `/api/leads/status` every 2 seconds.
+4. Continue polling until:
+   - 200 (success) → show download link
+   - 404 (no results) → show error + audienceId
+   - 60s timeout → show "still building" message + audienceId
+
+- Standard error shape:
   { "ok": false, "error": { "code": "string", "message": "string", "details": { "...": "..." } } }
 
 ## Signed URL Behavior
@@ -83,9 +114,36 @@
 
 - Provider selection via `LEAD_PROVIDER` env var: `mock` (default) or `audiencelab`.
 - Interface: `generateLeads({ leadRequest, zips, scope }) -> Promise<ProviderResult>`
-- ProviderResult: `{ ok: true, leads: Lead[] }` or `{ ok: false, error: ProviderError }`
-- Fallback behavior: when `LEAD_PROVIDER=audiencelab` but `AUDIENCELAB_API_KEY` is missing, silently falls back to mock.
-- No silent fallback on runtime errors: when audiencelab is enabled and API call fails, returns error.
+- ProviderResult: `{ ok: true, leads: Lead[], audienceId?, requestId?, diagnostics? }` or `{ ok: false, error: ProviderError }`
+- **NO silent fallback:** When `LEAD_PROVIDER=audiencelab` but `AUDIENCELAB_API_KEY` is missing, returns HTTP 500 `server_config_error` (not silent mock fallback).
+- Provider errors map to appropriate HTTP status codes.
+
+## Lead Quality Field Strategy
+
+Based on AudienceLab Fields Guide for high-quality lead data:
+
+### B2B (Commercial Scope)
+- **Email**: `BUSINESS_EMAIL` (only if `BUSINESS_EMAIL_VALIDATION_STATUS` = Valid when field exists)
+- **Phone**: `SKIPTRACE_B2B_WIRELESS` > `SKIPTRACE_B2B_LANDLINE` > `mobile_phone` > `phone`
+- **Address**: `COMPANY_ADDRESS` preferred, fallback to `address`
+
+### B2C (Residential Scope)
+- **Email**: `PERSONAL_EMAIL` (only if `PERSONAL_EMAIL_VALIDATION_STATUS` = Valid when field exists)
+- **Phone**: `SKIPTRACE_WIRELESS_NUMBERS` > `SKIPTRACE_LANDLINE_NUMBERS` > `mobile_phone` > `phone`
+- **DNC Filter**: Exclude contacts where `DNC` = "Y"
+
+### Quality Diagnostics
+
+Each successful response includes diagnostics (logged, not exposed to client PII):
+- `totalFetched`: Raw contacts from AudienceLab
+- `filteredInvalidEmail`: Excluded due to invalid email validation status
+- `filteredDnc`: Excluded due to DNC flag (B2C only)
+- `missingPhoneOrEmail`: Excluded due to no contact info
+- `exported`: Final count in CSV
+
+### CSV Security
+
+**Formula injection prevention:** All CSV values starting with `=`, `+`, `-`, `@`, tab, or carriage return are prefixed with a single quote (`'`) to prevent spreadsheet formula execution.
 
 ### Mock Provider (`api/_lib/providers/mock.ts`)
 - Deterministic 50 mock leads based on input hash.
@@ -153,6 +211,41 @@ The smoke test calls `GET /audiences?page=1&page_size=1` and reports:
   - Local terminal for smoke testing
   - `.env.local` (gitignored) for local dev
 - Typed errors (`AudienceLabAuthError`) never include the key in message or context
+
+### Troubleshooting: Audience Building (202)
+
+**Symptom:**
+API returns HTTP 202 with `provider_building` error code.
+
+**Cause:**
+AudienceLab audiences take time to populate. The audience was created successfully but has no members yet.
+
+**Expected Behavior:**
+1. UI shows "Building audience..." with elapsed time.
+2. UI polls `/api/leads/status` every 2 seconds.
+3. After up to 60 seconds, either success or timeout message.
+
+**Resolution:**
+- Most audiences populate within 5-30 seconds.
+- If consistently empty after 60s, contact AudienceLab support with the `audienceId`.
+- Check AudienceLab dashboard to verify the audience was created.
+
+### Troubleshooting: server_config_error (500)
+
+**Symptom:**
+API returns HTTP 500 with `server_config_error` code.
+
+**Cause:**
+Missing required environment variable(s). Common cases:
+- `LEAD_PROVIDER=audiencelab` but `AUDIENCELAB_API_KEY` is missing.
+- `SUPABASE_URL` and `VITE_SUPABASE_URL` both missing.
+- `SUPABASE_SERVICE_ROLE_KEY` missing.
+
+**Resolution:**
+1. Check error `details` and `hint` for specific missing variable.
+2. Go to Vercel project → Settings → Environment Variables.
+3. Add/fix the missing variable.
+4. Redeploy.
 
 ### Troubleshooting: ByteString / BOM Errors
 

@@ -1,4 +1,4 @@
-import type { Lead, GenerateInput, ProviderResult, LeadScope, LeadQualityDiagnostics, ProviderBuildingResult } from '../types.js';
+import type { Lead, GenerateInput, ProviderResult, LeadScope, LeadQualityDiagnostics } from '../types.js';
 import {
   AudienceLabAuthError,
   AudienceLabUpstreamError,

@@ -1,4 +1,5 @@
 import type { GenerateInput, ProviderResult } from '../types.js';
+import { ProviderConfigError } from '../types.js';
 import { generateLeads as mockGenerateLeads } from './mock.js';
 import { generateLeads as audiencelabGenerateLeads } from './audiencelab.js';
 
@@ -6,28 +7,37 @@ export type ProviderName = 'mock' | 'audiencelab';
 
 /**
  * Determine which provider to use based on environment configuration.
- * - Returns 'audiencelab' only if LEAD_PROVIDER=audiencelab AND AUDIENCELAB_API_KEY is set
- * - Falls back to 'mock' if audiencelab is requested but key is missing
+ * - Returns 'audiencelab' if LEAD_PROVIDER=audiencelab (key validation happens later)
  * - Defaults to 'mock' otherwise
  */
 export function getProviderName(): ProviderName {
   const env = process.env.LEAD_PROVIDER?.toLowerCase().trim();
+  return env === 'audiencelab' ? 'audiencelab' : 'mock';
+}
+
+/**
+ * Validate provider configuration.
+ * Throws ProviderConfigError if audiencelab is requested but key is missing.
+ * This ensures we NEVER silently fall back to mock when audiencelab is expected.
+ */
+export function validateProviderConfig(): void {
+  const provider = getProviderName();
   
-  if (env === 'audiencelab') {
-    // Only use audiencelab if API key is configured
-    if (process.env.AUDIENCELAB_API_KEY) {
-      return 'audiencelab';
-    }
-    // Fallback to mock if key is missing (silent fallback for missing config)
-    return 'mock';
+  if (provider === 'audiencelab' && !process.env.AUDIENCELAB_API_KEY) {
+    throw new ProviderConfigError({
+      provider: 'audiencelab',
+      message: 'LEAD_PROVIDER is set to audiencelab but AUDIENCELAB_API_KEY is missing.',
+      hint: 'Set AUDIENCELAB_API_KEY in environment variables, or change LEAD_PROVIDER to mock.',
+    });
   }
-  
-  return 'mock';
 }
 
 export async function generateLeads(
   input: GenerateInput
 ): Promise<ProviderResult> {
+  // Validate configuration before proceeding - throws if misconfigured
+  validateProviderConfig();
+  
   const provider = getProviderName();
 
   if (provider === 'audiencelab') {

@@ -5,6 +5,7 @@ import { leadsToCsv } from '../_lib/csv.js';
 import { validatePayload } from '../_lib/validation.js';
 import { jsonError } from '../_lib/json.js';
 import { AudienceLabAuthError, AudienceLabUpstreamError } from '../_lib/types.js';
+import { ConfigError } from '../_lib/bytestring.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
@@ -46,6 +47,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         err.code,
         'AudienceLab upstream service error.',
         err.toSafeContext()
+      );
+    }
+    // Handle configuration errors (e.g. BOM in API key)
+    if (err instanceof ConfigError) {
+      return jsonError(
+        res,
+        500,
+        err.code,
+        err.message,
+        { ...err.toSafeContext(), hint: err.hint }
       );
     }
     // Unknown errors

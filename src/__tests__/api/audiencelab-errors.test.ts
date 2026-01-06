@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { generateLeads } from '../../../api/_lib/providers/audiencelab';
 import type { GenerateInput } from '../../../api/_lib/types';
 import { AudienceLabAuthError, AudienceLabUpstreamError } from '../../../api/_lib/types';
+import { ConfigError } from '../../../api/_lib/bytestring';
 
 // Mock fetch globally
 const mockFetch = vi.fn();
@@ -26,15 +27,20 @@ describe('AudienceLab provider error handling', () => {
     process.env = originalEnv;
   });
 
-  it('returns provider_error when API key is missing', async () => {
+  it('throws ConfigError when API key is missing', async () => {
     delete process.env.AUDIENCELAB_API_KEY;
 
-    const result = await generateLeads(testInput);
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe('provider_error');
-      expect(result.error.message).toContain('AUDIENCELAB_API_KEY is not configured');
+    await expect(generateLeads(testInput)).rejects.toThrow(ConfigError);
+    
+    try {
+      await generateLeads(testInput);
+    } catch (err) {
+      expect(err).toBeInstanceOf(ConfigError);
+      if (err instanceof ConfigError) {
+        expect(err.code).toBe('CONFIG_MISSING');
+        expect(err.label).toBe('AUDIENCELAB_API_KEY');
+        expect(err.message).toContain('not configured');
+      }
     }
   });
 

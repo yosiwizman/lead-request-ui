@@ -1,6 +1,16 @@
 import type { Lead, GenerateInput, ProviderResult } from '../types.js';
-import { AudienceLabAuthError, AudienceLabUpstreamError } from '../types.js';
+import {
+  AudienceLabAuthError,
+  AudienceLabUpstreamError,
+  AudienceLabContractError,
+  AudienceLabAsyncError,
+} from '../types.js';
 import { sanitizeByteString } from '../bytestring.js';
+import {
+  extractAudienceId,
+  describeShape,
+  generateRequestId,
+} from '../audiencelab-response.js';
 
 const BASE_URL = process.env.AUDIENCELAB_BASE_URL || 'https://api.audiencelab.io';
 
@@ -34,13 +44,6 @@ interface AudienceLabContact {
   zip?: string;
   postal_code?: string;
   company?: string;
-}
-
-interface AudienceLabAudienceResponse {
-  id: string;
-  name?: string;
-  status?: string;
-  total_count?: number;
 }
 
 interface AudienceLabMembersResponse {
@@ -121,6 +124,9 @@ function buildAudiencePayload(input: GenerateInput): Record<string, unknown> {
 export async function generateLeads(
   input: GenerateInput
 ): Promise<ProviderResult> {
+  // Generate a correlation ID for this request
+  const requestId = generateRequestId();
+  
   // Sanitize API key - strips BOM, trims, validates Latin1 (ByteString-safe)
   // Throws ConfigError if invalid (caught at route boundary)
   const apiKey = sanitizeByteString(
@@ -145,7 +151,7 @@ export async function generateLeads(
     });
 
     if (!createResponse.ok) {
-      const requestId = createResponse.headers.get('x-request-id') ?? undefined;
+      const upstreamRequestId = createResponse.headers.get('x-request-id') ?? undefined;
       
       // Throw typed error for auth failures
       if (createResponse.status === 401 || createResponse.status === 403) {
@@ -153,7 +159,7 @@ export async function generateLeads(
           status: createResponse.status,
           endpoint: '/audiences',
           method: 'POST',
-          requestId,
+          requestId: upstreamRequestId || requestId,
         });
       }
       
@@ -163,35 +169,59 @@ export async function generateLeads(
           status: createResponse.status,
           endpoint: '/audiences',
           method: 'POST',
-          requestId,
+          requestId: upstreamRequestId || requestId,
         });
       }
       
       // Other errors (4xx except 401/403)
-      const errorBody = await createResponse.text();
       return {
         ok: false,
         error: {
           code: 'provider_error',
           message: `AudienceLab API returned ${createResponse.status} on audience creation`,
-          details: { status: createResponse.status, body: errorBody },
+          details: { status: createResponse.status, requestId },
         },
       };
     }
 
-    const audienceData: AudienceLabAudienceResponse = await createResponse.json();
-    const audienceId = audienceData.id;
+    // Parse response and extract audience ID using robust extractor
+    const audienceData = await createResponse.json();
+    const extractResult = extractAudienceId(audienceData, createResponse.headers);
 
-    if (!audienceId) {
-      return {
-        ok: false,
-        error: {
-          code: 'provider_error',
-          message: 'AudienceLab did not return an audience ID',
-          details: { response: audienceData },
-        },
-      };
+    if (!extractResult.ok) {
+      // Handle different failure reasons
+      if (extractResult.reason === 'async') {
+        throw new AudienceLabAsyncError({
+          endpoint: '/audiences',
+          method: 'POST',
+          requestId,
+          jobId: extractResult.jobId,
+          taskId: extractResult.taskId,
+        });
+      }
+      
+      if (extractResult.reason === 'error_payload') {
+        throw new AudienceLabContractError({
+          code: 'AUDIENCELAB_ERROR_PAYLOAD',
+          endpoint: '/audiences',
+          method: 'POST',
+          requestId,
+          responseShape: describeShape(audienceData),
+          upstreamMessage: extractResult.errorMessage,
+        });
+      }
+      
+      // reason === 'not_found'
+      throw new AudienceLabContractError({
+        code: 'AUDIENCELAB_NO_AUDIENCE_ID',
+        endpoint: '/audiences',
+        method: 'POST',
+        requestId,
+        responseShape: extractResult.shape,
+      });
     }
+
+    const audienceId = extractResult.audienceId;
 
     // Step 2: Fetch audience members (paginate up to 50 leads)
     const allContacts: AudienceLabContact[] = [];
@@ -208,7 +238,7 @@ export async function generateLeads(
       });
 
       if (!membersResponse.ok) {
-        const requestId = membersResponse.headers.get('x-request-id') ?? undefined;
+        const upstreamRequestId = membersResponse.headers.get('x-request-id') ?? undefined;
         const memberEndpoint = `/audiences/${audienceId}`;
         
         // Throw typed error for auth failures
@@ -217,7 +247,7 @@ export async function generateLeads(
             status: membersResponse.status,
             endpoint: memberEndpoint,
             method: 'GET',
-            requestId,
+            requestId: upstreamRequestId || requestId,
           });
         }
         
@@ -227,18 +257,17 @@ export async function generateLeads(
             status: membersResponse.status,
             endpoint: memberEndpoint,
             method: 'GET',
-            requestId,
+            requestId: upstreamRequestId || requestId,
           });
         }
         
         // Other errors
-        const errorBody = await membersResponse.text();
         return {
           ok: false,
           error: {
             code: 'provider_error',
             message: `AudienceLab API returned ${membersResponse.status} fetching members`,
-            details: { status: membersResponse.status, body: errorBody, audienceId },
+            details: { status: membersResponse.status, audienceId, requestId },
           },
         };
       }
@@ -284,7 +313,12 @@ export async function generateLeads(
     return { ok: true, leads };
   } catch (err) {
     // Re-throw typed errors for upstream handling
-    if (err instanceof AudienceLabAuthError || err instanceof AudienceLabUpstreamError) {
+    if (
+      err instanceof AudienceLabAuthError ||
+      err instanceof AudienceLabUpstreamError ||
+      err instanceof AudienceLabContractError ||
+      err instanceof AudienceLabAsyncError
+    ) {
       throw err;
     }
     

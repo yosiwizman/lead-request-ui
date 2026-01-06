@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { generateLeads } from '../../../api/_lib/providers/audiencelab';
 import type { GenerateInput } from '../../../api/_lib/types';
-import { AudienceLabAuthError, AudienceLabUpstreamError } from '../../../api/_lib/types';
+import {
+  AudienceLabAuthError,
+  AudienceLabUpstreamError,
+  AudienceLabContractError,
+} from '../../../api/_lib/types';
 import { ConfigError } from '../../../api/_lib/bytestring';
 
 // Mock fetch globally
@@ -100,18 +104,24 @@ describe('AudienceLab provider error handling', () => {
     }
   });
 
-  it('returns provider_error when audience ID is missing from response', async () => {
+  it('throws AudienceLabContractError when audience ID is missing from response', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
+      headers: new Headers(),
       json: async () => ({ name: 'test audience' }), // Missing id
     });
 
-    const result = await generateLeads(testInput);
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe('provider_error');
-      expect(result.error.message).toContain('did not return an audience ID');
+    await expect(generateLeads(testInput)).rejects.toThrow(AudienceLabContractError);
+    
+    try {
+      await generateLeads(testInput);
+    } catch (err) {
+      expect(err).toBeInstanceOf(AudienceLabContractError);
+      if (err instanceof AudienceLabContractError) {
+        expect(err.code).toBe('AUDIENCELAB_NO_AUDIENCE_ID');
+        expect(err.requestId).toBeDefined();
+        expect(err.responseShape).toContain('object');
+      }
     }
   });
 

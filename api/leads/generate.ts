@@ -204,6 +204,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     count: leads.length, 
     durationMs,
     diagnostics: result.diagnostics,
+    fieldCoverage: result.fieldCoverage,
   });
 
   return res.status(200).json({
@@ -216,5 +217,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     audienceId: result.audienceId,
     requestId,
     quality: result.diagnostics,
+    fieldCoverage: result.fieldCoverage,
   });
 }

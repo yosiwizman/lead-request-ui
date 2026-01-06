@@ -4,6 +4,7 @@ import './App.css'
 type Scope = 'Residential' | 'Commercial' | 'Both'
 type UseCase = 'call' | 'email' | 'both'
 type AppStatus = 'idle' | 'loading' | 'building' | 'success' | 'error'
+type CoverageFieldName = 'first_name' | 'last_name' | 'address' | 'city' | 'state' | 'zip' | 'phone' | 'email'
 
 interface QualitySummary {
   totalFetched: number
@@ -12,6 +13,17 @@ interface QualitySummary {
   filteredInvalidEmail: number
   filteredDnc: number
   missingNameOrAddressCount: number
+}
+
+interface FieldCoverageBlock {
+  total: number
+  present: Record<CoverageFieldName, number>
+  pct: Record<CoverageFieldName, number>
+}
+
+interface FieldCoverage {
+  coverageFetched: FieldCoverageBlock
+  coverageKept: FieldCoverageBlock
 }
 
 interface BuildingDetails {
@@ -36,6 +48,8 @@ function App() {
   const [signedUrl, setSignedUrl] = useState<string>('')
   const [leadCount, setLeadCount] = useState<number>(0)
   const [qualitySummary, setQualitySummary] = useState<QualitySummary | null>(null)
+  const [fieldCoverage, setFieldCoverage] = useState<FieldCoverage | null>(null)
+  const [fieldCoverageExpanded, setFieldCoverageExpanded] = useState(false)
   const [buildingDetails, setBuildingDetails] = useState<BuildingDetails | null>(null)
   const [pollElapsed, setPollElapsed] = useState(0)
   
@@ -83,6 +97,7 @@ function App() {
         setLeadCount(data.count || 0)
         setSignedUrl(data.signedUrl || '')
         setQualitySummary(data.quality || null)
+        setFieldCoverage(data.fieldCoverage || null)
         setStatus('success')
         setBuildingDetails(null)
         return
@@ -139,6 +154,8 @@ function App() {
     setSignedUrl('')
     setLeadCount(0)
     setQualitySummary(null)
+    setFieldCoverage(null)
+    setFieldCoverageExpanded(false)
     setBuildingDetails(null)
 
     try {
@@ -182,6 +199,7 @@ function App() {
       setLeadCount(data.count || 0)
       setSignedUrl(data.signedUrl || '')
       setQualitySummary(data.quality || null)
+      setFieldCoverage(data.fieldCoverage || null)
       setStatus('success')
     } catch {
       setErrorMessage('Failed to generate leads')
@@ -298,6 +316,76 @@ function App() {
                       <li>Missing name/address: {qualitySummary.missingNameOrAddressCount}</li>
                     )}
                   </ul>
+                </div>
+              )}
+              
+              {fieldCoverage && (
+                <div className="field-coverage">
+                  <button 
+                    className="field-coverage-toggle"
+                    onClick={() => setFieldCoverageExpanded(!fieldCoverageExpanded)}
+                    type="button"
+                  >
+                    {fieldCoverageExpanded ? '▼' : '▶'} Field Coverage Diagnostics
+                  </button>
+                  
+                  {fieldCoverageExpanded && (
+                    <div className="field-coverage-content">
+                      <div className="coverage-block">
+                        <h5>Before Filtering ({fieldCoverage.coverageFetched.total} contacts)</h5>
+                        <table className="coverage-table">
+                          <thead>
+                            <tr>
+                              <th>Field</th>
+                              <th>Count</th>
+                              <th>%</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(['first_name', 'last_name', 'address', 'city', 'state', 'zip', 'phone', 'email'] as CoverageFieldName[]).map(field => (
+                              <tr key={field} className={fieldCoverage.coverageFetched.pct[field] === 0 ? 'coverage-zero' : ''}>
+                                <td>{field.replace('_', ' ')}</td>
+                                <td>{fieldCoverage.coverageFetched.present[field]}</td>
+                                <td>{fieldCoverage.coverageFetched.pct[field]}%</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      
+                      <div className="coverage-block">
+                        <h5>After Filtering ({fieldCoverage.coverageKept.total} leads)</h5>
+                        <table className="coverage-table">
+                          <thead>
+                            <tr>
+                              <th>Field</th>
+                              <th>Count</th>
+                              <th>%</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(['first_name', 'last_name', 'address', 'city', 'state', 'zip', 'phone', 'email'] as CoverageFieldName[]).map(field => (
+                              <tr key={field} className={fieldCoverage.coverageKept.pct[field] === 0 ? 'coverage-zero' : ''}>
+                                <td>{field.replace('_', ' ')}</td>
+                                <td>{fieldCoverage.coverageKept.present[field]}</td>
+                                <td>{fieldCoverage.coverageKept.pct[field]}%</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      
+                      {/* Enrichment recommendation */}
+                      {(fieldCoverage.coverageFetched.pct.first_name <= 5 || 
+                        fieldCoverage.coverageFetched.pct.address <= 5 || 
+                        fieldCoverage.coverageFetched.pct.email <= 5) && (
+                        <div className="enrichment-notice">
+                          ⚠️ <strong>Enrichment may be needed:</strong> Name, address, or email coverage is very low ({`<`}5%).
+                          Consider using a data enrichment service to fill in missing contact details.
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
               

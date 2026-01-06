@@ -241,8 +241,46 @@ export interface QualitySummary {
   missingNameOrAddressCount: number;
 }
 
+/**
+ * Field names tracked for coverage diagnostics.
+ * These are the 8 core lead fields we care about.
+ */
+export type CoverageFieldName = 
+  | 'first_name'
+  | 'last_name'
+  | 'address'
+  | 'city'
+  | 'state'
+  | 'zip'
+  | 'phone'
+  | 'email';
+
+/**
+ * Field coverage statistics for a set of contacts/leads.
+ * Used to diagnose data quality without exposing PII.
+ */
+export interface FieldCoverageBlock {
+  /** Total number of contacts/leads in this set */
+  total: number;
+  /** Count of contacts with each field present (non-empty) */
+  present: Record<CoverageFieldName, number>;
+  /** Percentage (0-100) of contacts with each field present */
+  pct: Record<CoverageFieldName, number>;
+}
+
+/**
+ * Field coverage diagnostics for API response.
+ * Provides before/after filtering coverage to identify data quality issues.
+ */
+export interface FieldCoverage {
+  /** Coverage of raw fetched contacts (before quality filtering) */
+  coverageFetched: FieldCoverageBlock;
+  /** Coverage of kept leads (after quality filtering) */
+  coverageKept: FieldCoverageBlock;
+}
+
 export type ProviderResult =
-  | { ok: true; leads: Lead[]; audienceId?: string; requestId?: string; diagnostics?: LeadQualityDiagnostics }
+  | { ok: true; leads: Lead[]; audienceId?: string; requestId?: string; diagnostics?: LeadQualityDiagnostics; fieldCoverage?: FieldCoverage }
   | { ok: false; error: ProviderError };
 
 /**

@@ -103,8 +103,7 @@ describe('extractAudienceId', () => {
     it('returns not_found for empty array', () => {
       const result = extractAudienceId([]);
       expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.reason).toBe('not_found');
+      if (!result.ok && result.reason === 'not_found') {
         expect(result.shape).toBe('empty_array');
       }
     });
@@ -138,8 +137,7 @@ describe('extractAudienceId', () => {
     it('detects job_id response without audience id', () => {
       const result = extractAudienceId({ job_id: 'job_123', status: 'processing' });
       expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.reason).toBe('async');
+      if (!result.ok && result.reason === 'async') {
         expect(result.jobId).toBe('job_123');
       }
     });
@@ -147,8 +145,7 @@ describe('extractAudienceId', () => {
     it('detects task_id response without audience id', () => {
       const result = extractAudienceId({ task_id: 'task_456' });
       expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.reason).toBe('async');
+      if (!result.ok && result.reason === 'async') {
         expect(result.taskId).toBe('task_456');
       }
     });
@@ -166,8 +163,7 @@ describe('extractAudienceId', () => {
     it('detects error field', () => {
       const result = extractAudienceId({ error: 'Something went wrong' });
       expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.reason).toBe('error_payload');
+      if (!result.ok && result.reason === 'error_payload') {
         expect(result.errorMessage).toBe('Something went wrong');
       }
     });
@@ -175,8 +171,7 @@ describe('extractAudienceId', () => {
     it('detects nested error message', () => {
       const result = extractAudienceId({ error: { message: 'Nested error' } });
       expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.reason).toBe('error_payload');
+      if (!result.ok && result.reason === 'error_payload') {
         expect(result.errorMessage).toBe('Nested error');
       }
     });
@@ -184,8 +179,7 @@ describe('extractAudienceId', () => {
     it('detects errors array', () => {
       const result = extractAudienceId({ errors: ['First error', 'Second error'] });
       expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.reason).toBe('error_payload');
+      if (!result.ok && result.reason === 'error_payload') {
         expect(result.errorMessage).toBe('First error');
       }
     });
@@ -193,8 +187,7 @@ describe('extractAudienceId', () => {
     it('detects success: false pattern', () => {
       const result = extractAudienceId({ success: false, message: 'Failed' });
       expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.reason).toBe('error_payload');
+      if (!result.ok && result.reason === 'error_payload') {
         expect(result.errorMessage).toBe('Failed');
       }
     });
@@ -220,8 +213,7 @@ describe('extractAudienceId', () => {
     it('returns not_found for object without id', () => {
       const result = extractAudienceId({ name: 'Test', status: 'active' });
       expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.reason).toBe('not_found');
+      if (!result.ok && result.reason === 'not_found') {
         expect(result.shape).toContain('object');
       }
     });

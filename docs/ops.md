@@ -149,6 +149,34 @@ The smoke test calls `GET /audiences?page=1&page_size=1` and reports:
   - `.env.local` (gitignored) for local dev
 - Typed errors (`AudienceLabAuthError`) never include the key in message or context
 
+### Troubleshooting: ByteString / BOM Errors
+
+**Symptom:**
+```
+Cannot convert argument to a ByteString because the character at index 0 has a value of 65279 which is greater than 255
+```
+
+**Cause:**
+The `AUDIENCELAB_API_KEY` env var contains an invisible UTF-8 BOM (Byte Order Mark, U+FEFF = 65279) at the beginning. This often happens when:
+- Copying from rich text editors (Word, Google Docs, Notion)
+- Copying from certain password managers
+- File encoding issues
+
+**Fix:**
+1. Go to Vercel project → Settings → Environment Variables
+2. Delete the existing `AUDIENCELAB_API_KEY`
+3. Re-copy the key **directly** from AudienceLab dashboard (plain text source)
+4. Paste into Vercel and save
+5. Redeploy
+
+**Prevention:**
+Our codebase now includes a `sanitizeByteString()` utility (`api/_lib/bytestring.ts`) that:
+- Strips leading BOM characters automatically
+- Validates all characters are Latin1 (charCode ≤ 255)
+- Returns a clean `ConfigError` with actionable hints instead of crashing
+
+If you see a `CONFIG_MISSING`, `CONFIG_EMPTY`, or `INVALID_HEADER_VALUE` error in the JSON response, check the `hint` field for resolution steps.
+
 ## Rationale: Service Role Key Stays Server-only
 
 - The service role key grants full access to Storage and Database.

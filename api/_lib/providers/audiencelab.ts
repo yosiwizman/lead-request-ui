@@ -1,5 +1,6 @@
 import type { Lead, GenerateInput, ProviderResult } from '../types.js';
 import { AudienceLabAuthError, AudienceLabUpstreamError } from '../types.js';
+import { sanitizeByteString } from '../bytestring.js';
 
 const BASE_URL = process.env.AUDIENCELAB_BASE_URL || 'https://api.audiencelab.io';
 
@@ -120,17 +121,12 @@ function buildAudiencePayload(input: GenerateInput): Record<string, unknown> {
 export async function generateLeads(
   input: GenerateInput
 ): Promise<ProviderResult> {
-  const apiKey = process.env.AUDIENCELAB_API_KEY;
-
-  if (!apiKey) {
-    return {
-      ok: false,
-      error: {
-        code: 'provider_error',
-        message: 'AUDIENCELAB_API_KEY is not configured.',
-      },
-    };
-  }
+  // Sanitize API key - strips BOM, trims, validates Latin1 (ByteString-safe)
+  // Throws ConfigError if invalid (caught at route boundary)
+  const apiKey = sanitizeByteString(
+    process.env.AUDIENCELAB_API_KEY,
+    'AUDIENCELAB_API_KEY'
+  );
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',

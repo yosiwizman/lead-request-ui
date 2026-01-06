@@ -39,81 +39,77 @@ describe('mapAudienceLabContactToLead', () => {
       zip: '33101',
     };
 
-    const lead = mapAudienceLabContactToLead(contact, baseInput, 0);
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
 
-    expect(lead.first_name).toBe('John');
-    expect(lead.last_name).toBe('Doe');
-    expect(lead.email).toBe('john.doe@example.com');
-    expect(lead.phone).toBe('305-555-1234');
-    expect(lead.address).toBe('123 Main St');
-    expect(lead.city).toBe('Miami');
-    expect(lead.state).toBe('FL');
-    expect(lead.zip).toBe('33101');
-    expect(lead.lead_type).toBe('residential');
-    expect(lead.tags).toBe('roofing');
-    expect(lead.source).toBe('audiencelab');
+    expect(result.excluded).toBeNull();
+    expect(result.lead).not.toBeNull();
+    expect(result.lead!.first_name).toBe('John');
+    expect(result.lead!.last_name).toBe('Doe');
+    expect(result.lead!.email).toBe('john.doe@example.com');
+    expect(result.lead!.phone).toBe('305-555-1234');
+    expect(result.lead!.address).toBe('123 Main St');
+    expect(result.lead!.city).toBe('Miami');
+    expect(result.lead!.state).toBe('FL');
+    expect(result.lead!.zip).toBe('33101');
+    expect(result.lead!.lead_type).toBe('residential');
+    expect(result.lead!.tags).toBe('roofing');
+    expect(result.lead!.source).toBe('audiencelab');
   });
 
   it('uses alternative field names when primary fields missing', () => {
     const contact = {
       first_name: 'Jane',
       last_name: 'Smith',
-      mobile_phone: '305-555-9999',
+      mobile_phone: '305-555-5678',
       street_address: '456 Oak Ave',
       postal_code: '33130',
     };
 
-    const lead = mapAudienceLabContactToLead(contact, baseInput, 0);
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
 
-    expect(lead.phone).toBe('305-555-9999');
-    expect(lead.address).toBe('456 Oak Ave');
-    expect(lead.zip).toBe('33130');
+    expect(result.lead).not.toBeNull();
+    expect(result.lead!.phone).toBe('305-555-5678');
+    expect(result.lead!.address).toBe('456 Oak Ave');
+    expect(result.lead!.zip).toBe('33130');
   });
 
-  it('handles missing fields gracefully', () => {
+  it('excludes contacts with no phone or email', () => {
     const contact = {};
 
-    const lead = mapAudienceLabContactToLead(contact, baseInput, 0);
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
 
-    expect(lead.first_name).toBe('');
-    expect(lead.last_name).toBe('');
-    expect(lead.email).toBe('');
-    expect(lead.phone).toBe('');
-    expect(lead.address).toBe('');
-    expect(lead.city).toBe('');
-    expect(lead.state).toBe('');
-    expect(lead.zip).toBe('');
-    expect(lead.source).toBe('audiencelab');
+    expect(result.lead).toBeNull();
+    expect(result.excluded).toBe('missing_contact');
   });
 
   it('uses scope from input for lead_type when residential', () => {
-    const contact = { first_name: 'Test' };
+    const contact = { first_name: 'Test', email: 'test@example.com' };
     const residentialInput: GenerateInput = {
       leadRequest: 'hvac',
       zips: ['90210'],
       scope: 'residential',
     };
 
-    const lead = mapAudienceLabContactToLead(contact, residentialInput, 0);
+    const result = mapAudienceLabContactToLead(contact, residentialInput, 0);
 
-    expect(lead.lead_type).toBe('residential');
+    expect(result.lead!.lead_type).toBe('residential');
   });
 
   it('uses scope from input for lead_type when commercial', () => {
-    const contact = { first_name: 'Test' };
+    const contact = { first_name: 'Test', email: 'test@example.com' };
     const commercialInput: GenerateInput = {
       leadRequest: 'hvac',
       zips: ['90210'],
       scope: 'commercial',
     };
 
-    const lead = mapAudienceLabContactToLead(contact, commercialInput, 0);
+    const result = mapAudienceLabContactToLead(contact, commercialInput, 0);
 
-    expect(lead.lead_type).toBe('commercial');
+    expect(result.lead!.lead_type).toBe('commercial');
   });
 
   it('alternates lead_type when scope is both', () => {
-    const contact = { first_name: 'Test' };
+    const contact = { first_name: 'Test', email: 'test@example.com' };
     const bothInput: GenerateInput = {
       leadRequest: 'solar',
       zips: ['10001'],
@@ -121,28 +117,42 @@ describe('mapAudienceLabContactToLead', () => {
     };
 
     // Even index should be residential
-    const lead0 = mapAudienceLabContactToLead(contact, bothInput, 0);
-    expect(lead0.lead_type).toBe('residential');
+    const result0 = mapAudienceLabContactToLead(contact, bothInput, 0);
+    expect(result0.lead!.lead_type).toBe('residential');
 
     // Odd index should be commercial
-    const lead1 = mapAudienceLabContactToLead(contact, bothInput, 1);
-    expect(lead1.lead_type).toBe('commercial');
+    const result1 = mapAudienceLabContactToLead(contact, bothInput, 1);
+    expect(result1.lead!.lead_type).toBe('commercial');
 
     // Even index again
-    const lead2 = mapAudienceLabContactToLead(contact, bothInput, 2);
-    expect(lead2.lead_type).toBe('residential');
+    const result2 = mapAudienceLabContactToLead(contact, bothInput, 2);
+    expect(result2.lead!.lead_type).toBe('residential');
   });
 
   it('includes leadRequest in tags', () => {
-    const contact = { first_name: 'Test' };
+    const contact = { first_name: 'Test', phone: '305-555-1234' };
     const input: GenerateInput = {
       leadRequest: 'plumbing services miami',
       zips: ['33101'],
       scope: 'residential',
     };
 
-    const lead = mapAudienceLabContactToLead(contact, input, 0);
+    const result = mapAudienceLabContactToLead(contact, input, 0);
 
-    expect(lead.tags).toBe('plumbing services miami');
+    expect(result.lead!.tags).toBe('plumbing services miami');
+  });
+
+  it('excludes contacts with DNC=Y in residential scope', () => {
+    const contact = { first_name: 'Test', email: 'test@example.com', DNC: 'Y' };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
+    expect(result.lead).toBeNull();
+    expect(result.excluded).toBe('dnc');
+  });
+
+  it('does not exclude DNC=Y in commercial scope', () => {
+    const contact = { first_name: 'Test', email: 'test@example.com', DNC: 'Y' };
+    const commercialInput: GenerateInput = { ...baseInput, scope: 'commercial' };
+    const result = mapAudienceLabContactToLead(contact, commercialInput, 0);
+    expect(result.lead).not.toBeNull();
   });
 });

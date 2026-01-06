@@ -199,7 +199,7 @@ export class AudienceLabAsyncError extends Error {
 }
 
 // Provider result types
-export type ProviderErrorCode = 'provider_error' | 'provider_no_results';
+export type ProviderErrorCode = 'provider_error' | 'provider_no_results' | 'provider_building';
 
 export interface ProviderError {
   code: ProviderErrorCode;
@@ -207,6 +207,50 @@ export interface ProviderError {
   details?: Json;
 }
 
+/**
+ * Diagnostics for lead quality filtering (never includes PII).
+ */
+export interface LeadQualityDiagnostics {
+  totalFetched: number;
+  filteredInvalidEmail: number;
+  filteredDnc: number;
+  missingPhoneOrEmail: number;
+  exported: number;
+}
+
 export type ProviderResult =
-  | { ok: true; leads: Lead[] }
+  | { ok: true; leads: Lead[]; audienceId?: string; requestId?: string; diagnostics?: LeadQualityDiagnostics }
   | { ok: false; error: ProviderError };
+
+/**
+ * Result when audience is still building (async).
+ */
+export interface ProviderBuildingResult {
+  building: true;
+  audienceId: string;
+  requestId: string;
+}
+
+/**
+ * Configuration error thrown when provider is misconfigured.
+ */
+export class ProviderConfigError extends Error {
+  public readonly code = 'server_config_error' as const;
+  public readonly provider: string;
+  public readonly hint: string;
+
+  constructor(opts: { provider: string; message: string; hint: string }) {
+    super(opts.message);
+    this.name = 'ProviderConfigError';
+    this.provider = opts.provider;
+    this.hint = opts.hint;
+  }
+
+  toSafeContext(): Record<string, unknown> {
+    return {
+      code: this.code,
+      provider: this.provider,
+      hint: this.hint,
+    };
+  }
+}

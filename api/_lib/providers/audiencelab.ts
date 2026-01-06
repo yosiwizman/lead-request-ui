@@ -1,4 +1,4 @@
-import type { Lead, GenerateInput, ProviderResult } from '../types.js';
+import type { Lead, GenerateInput, ProviderResult, LeadScope, LeadQualityDiagnostics } from '../types.js';
 import {
   AudienceLabAuthError,
   AudienceLabUpstreamError,
@@ -15,7 +15,6 @@ import {
 const BASE_URL = process.env.AUDIENCELAB_BASE_URL || 'https://api.audiencelab.io';
 
 // Simple ZIP to city/state lookup for common US zips
-// This is a minimal embedded lookup; for production, consider a more complete dataset
 const ZIP_LOOKUP: Record<string, { city: string; state: string }> = {
   '33101': { city: 'Miami', state: 'FL' },
   '33130': { city: 'Miami', state: 'FL' },
@@ -31,7 +30,12 @@ const ZIP_LOOKUP: Record<string, { city: string; state: string }> = {
   '75201': { city: 'Dallas', state: 'TX' },
 };
 
+/**
+ * AudienceLab contact with Fields Guide quality fields.
+ * See: AudienceLab Fields Guide for B2B/B2C best practices.
+ */
 interface AudienceLabContact {
+  // Basic fields
   first_name?: string;
   last_name?: string;
   email?: string;
@@ -44,6 +48,20 @@ interface AudienceLabContact {
   zip?: string;
   postal_code?: string;
   company?: string;
+  
+  // B2B quality fields (AudienceLab Fields Guide)
+  BUSINESS_EMAIL?: string;
+  BUSINESS_EMAIL_VALIDATION_STATUS?: string; // 'Valid' | 'Invalid' | etc.
+  SKIPTRACE_B2B_WIRELESS?: string;
+  SKIPTRACE_B2B_LANDLINE?: string;
+  COMPANY_ADDRESS?: string;
+  
+  // B2C quality fields (AudienceLab Fields Guide)
+  PERSONAL_EMAIL?: string;
+  PERSONAL_EMAIL_VALIDATION_STATUS?: string; // 'Valid' | 'Invalid' | etc.
+  SKIPTRACE_WIRELESS_NUMBERS?: string;
+  SKIPTRACE_LANDLINE_NUMBERS?: string;
+  DNC?: string; // 'Y' | 'N' | undefined - Do Not Call
 }
 
 interface AudienceLabMembersResponse {
@@ -63,34 +81,127 @@ export function lookupZipLocation(zip: string): { city: string; state: string } 
 }
 
 /**
- * Map an AudienceLab contact to our Lead format.
+ * Select best email based on scope using AudienceLab Fields Guide.
+ * B2B: Prefer BUSINESS_EMAIL with Valid status
+ * B2C: Prefer PERSONAL_EMAIL with Valid status
+ */
+function selectQualityEmail(contact: AudienceLabContact, scope: LeadScope): { email: string; isValid: boolean } {
+  if (scope === 'commercial') {
+    // B2B: BUSINESS_EMAIL preferred
+    if (contact.BUSINESS_EMAIL) {
+      const isValid = contact.BUSINESS_EMAIL_VALIDATION_STATUS?.toLowerCase() === 'valid';
+      return { email: contact.BUSINESS_EMAIL, isValid: isValid || contact.BUSINESS_EMAIL_VALIDATION_STATUS === undefined };
+    }
+  } else {
+    // B2C: PERSONAL_EMAIL preferred
+    if (contact.PERSONAL_EMAIL) {
+      const isValid = contact.PERSONAL_EMAIL_VALIDATION_STATUS?.toLowerCase() === 'valid';
+      return { email: contact.PERSONAL_EMAIL, isValid: isValid || contact.PERSONAL_EMAIL_VALIDATION_STATUS === undefined };
+    }
+  }
+  // Fallback to basic email field
+  return { email: contact.email || '', isValid: true };
+}
+
+/**
+ * Select best phone based on scope using AudienceLab Fields Guide.
+ * B2B: SKIPTRACE_B2B_WIRELESS > SKIPTRACE_B2B_LANDLINE > mobile_phone > phone
+ * B2C: SKIPTRACE_WIRELESS_NUMBERS > SKIPTRACE_LANDLINE_NUMBERS > mobile_phone > phone
+ */
+function selectQualityPhone(contact: AudienceLabContact, scope: LeadScope): string {
+  if (scope === 'commercial') {
+    // B2B phone hierarchy
+    return contact.SKIPTRACE_B2B_WIRELESS 
+      || contact.SKIPTRACE_B2B_LANDLINE 
+      || contact.mobile_phone 
+      || contact.phone 
+      || '';
+  } else {
+    // B2C phone hierarchy
+    return contact.SKIPTRACE_WIRELESS_NUMBERS 
+      || contact.SKIPTRACE_LANDLINE_NUMBERS 
+      || contact.mobile_phone 
+      || contact.phone 
+      || '';
+  }
+}
+
+/**
+ * Check if contact should be excluded due to DNC (Do Not Call).
+ * Only applies to B2C (residential) scope.
+ */
+function isDncExcluded(contact: AudienceLabContact, scope: LeadScope): boolean {
+  if (scope === 'commercial') return false; // DNC typically for B2C
+  return contact.DNC?.toUpperCase() === 'Y';
+}
+
+/**
+ * Quality filter result for diagnostics.
+ */
+interface QualityFilterResult {
+  lead: Lead | null;
+  excluded: 'dnc' | 'invalid_email' | 'missing_contact' | null;
+}
+
+/**
+ * Map an AudienceLab contact to our Lead format with quality filtering.
+ * Uses AudienceLab Fields Guide for optimal field selection.
  */
 export function mapAudienceLabContactToLead(
   contact: AudienceLabContact,
   input: GenerateInput,
   index: number
-): Lead {
-  // For scope='both', alternate between residential and commercial
-  let leadType: string;
+): QualityFilterResult {
+  // Determine effective scope for this contact
+  let effectiveScope: LeadScope;
   if (input.scope === 'both') {
-    leadType = index % 2 === 0 ? 'residential' : 'commercial';
+    effectiveScope = index % 2 === 0 ? 'residential' : 'commercial';
   } else {
-    leadType = input.scope;
+    effectiveScope = input.scope;
   }
 
-  return {
+  // Check DNC exclusion (B2C only)
+  if (isDncExcluded(contact, effectiveScope)) {
+    return { lead: null, excluded: 'dnc' };
+  }
+
+  // Select quality email
+  const { email, isValid: emailValid } = selectQualityEmail(contact, effectiveScope);
+  
+  // Exclude contacts with explicitly invalid emails
+  if (!emailValid) {
+    return { lead: null, excluded: 'invalid_email' };
+  }
+
+  // Select quality phone
+  const phone = selectQualityPhone(contact, effectiveScope);
+
+  // Select address (B2B: prefer COMPANY_ADDRESS)
+  let address = contact.address || contact.street_address || '';
+  if (effectiveScope === 'commercial' && contact.COMPANY_ADDRESS) {
+    address = contact.COMPANY_ADDRESS;
+  }
+
+  const lead: Lead = {
     first_name: contact.first_name || '',
     last_name: contact.last_name || '',
-    address: contact.address || contact.street_address || '',
+    address,
     city: contact.city || '',
     state: contact.state || '',
     zip: contact.zip || contact.postal_code || '',
-    phone: contact.phone || contact.mobile_phone || '',
-    email: contact.email || '',
-    lead_type: leadType,
+    phone,
+    email,
+    lead_type: effectiveScope,
     tags: input.leadRequest,
     source: 'audiencelab',
   };
+
+  // Check if we have at least phone or email
+  if (!phone && !email) {
+    return { lead: null, excluded: 'missing_contact' };
+  }
+
+  return { lead, excluded: null };
 }
 
 /**
@@ -294,23 +405,67 @@ export async function generateLeads(
       }
     }
 
+    // If no contacts yet, return building status (audience may still be populating)
     if (allContacts.length === 0) {
       return {
         ok: false,
         error: {
-          code: 'provider_no_results',
-          message: 'No leads found for the given criteria.',
-          details: { zips: input.zips, scope: input.scope, audienceId },
+          code: 'provider_building',
+          message: 'Audience is building. Please poll for results.',
+          details: { 
+            zips: input.zips, 
+            scope: input.scope, 
+            audienceId,
+            requestId,
+            retryAfterSeconds: 2,
+          },
         },
       };
     }
 
-    // Map contacts to leads (cap at 50)
-    const leads = allContacts
-      .slice(0, maxLeads)
-      .map((contact, index) => mapAudienceLabContactToLead(contact, input, index));
+    // Map contacts to leads with quality filtering (cap at 50)
+    const diagnostics: LeadQualityDiagnostics = {
+      totalFetched: allContacts.length,
+      filteredInvalidEmail: 0,
+      filteredDnc: 0,
+      missingPhoneOrEmail: 0,
+      exported: 0,
+    };
+    
+    const leads: Lead[] = [];
+    for (let i = 0; i < allContacts.length && leads.length < maxLeads; i++) {
+      const result = mapAudienceLabContactToLead(allContacts[i], input, i);
+      if (result.lead) {
+        leads.push(result.lead);
+      } else {
+        // Track exclusion reasons for diagnostics
+        switch (result.excluded) {
+          case 'invalid_email': diagnostics.filteredInvalidEmail++; break;
+          case 'dnc': diagnostics.filteredDnc++; break;
+          case 'missing_contact': diagnostics.missingPhoneOrEmail++; break;
+        }
+      }
+    }
+    diagnostics.exported = leads.length;
 
-    return { ok: true, leads };
+    // If all contacts were filtered out, still return building (might get more data)
+    if (leads.length === 0) {
+      return {
+        ok: false,
+        error: {
+          code: 'provider_building',
+          message: 'Audience has contacts but all were filtered. May still be building.',
+          details: { 
+            audienceId,
+            requestId,
+            retryAfterSeconds: 2,
+            diagnostics,
+          },
+        },
+      };
+    }
+
+    return { ok: true, leads, audienceId, requestId, diagnostics };
   } catch (err) {
     // Re-throw typed errors for upstream handling
     if (
@@ -328,6 +483,152 @@ export async function generateLeads(
       error: {
         code: 'provider_error',
         message: `AudienceLab request failed: ${message}`,
+      },
+    };
+  }
+}
+
+/**
+ * Fetch members for an existing audience (used for polling by status endpoint).
+ * Returns building status if no members yet, or leads if available.
+ */
+export async function fetchAudienceMembers(
+  audienceId: string,
+  input: GenerateInput,
+  requestId?: string
+): Promise<ProviderResult> {
+  const effectiveRequestId = requestId || generateRequestId();
+  
+  const apiKey = sanitizeByteString(
+    process.env.AUDIENCELAB_API_KEY,
+    'AUDIENCELAB_API_KEY'
+  );
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Api-Key': apiKey,
+  };
+
+  const allContacts: AudienceLabContact[] = [];
+  let page = 1;
+  const pageSize = 50;
+  const maxLeads = 50;
+
+  try {
+    while (allContacts.length < maxLeads) {
+      const membersUrl = `${BASE_URL}/audiences/${audienceId}?page=${page}&page_size=${pageSize}`;
+      
+      const membersResponse = await fetch(membersUrl, {
+        method: 'GET',
+        headers,
+      });
+
+      if (!membersResponse.ok) {
+        const upstreamRequestId = membersResponse.headers.get('x-request-id') ?? undefined;
+        const memberEndpoint = `/audiences/${audienceId}`;
+        
+        if (membersResponse.status === 401 || membersResponse.status === 403) {
+          throw new AudienceLabAuthError({
+            status: membersResponse.status,
+            endpoint: memberEndpoint,
+            method: 'GET',
+            requestId: upstreamRequestId || effectiveRequestId,
+          });
+        }
+        
+        if (membersResponse.status >= 500) {
+          throw new AudienceLabUpstreamError({
+            status: membersResponse.status,
+            endpoint: memberEndpoint,
+            method: 'GET',
+            requestId: upstreamRequestId || effectiveRequestId,
+          });
+        }
+        
+        return {
+          ok: false,
+          error: {
+            code: 'provider_error',
+            message: `AudienceLab API returned ${membersResponse.status} fetching members`,
+            details: { status: membersResponse.status, audienceId, requestId: effectiveRequestId },
+          },
+        };
+      }
+
+      const membersData: AudienceLabMembersResponse = await membersResponse.json();
+      const contacts = membersData.data || membersData.members || [];
+
+      if (contacts.length === 0) break;
+      allContacts.push(...contacts);
+      if (contacts.length < pageSize) break;
+      page++;
+      if (page > 10) break;
+    }
+
+    // Still building if no contacts
+    if (allContacts.length === 0) {
+      return {
+        ok: false,
+        error: {
+          code: 'provider_building',
+          message: 'Audience is still building.',
+          details: { audienceId, requestId: effectiveRequestId, retryAfterSeconds: 2 },
+        },
+      };
+    }
+
+    // Apply quality filtering
+    const diagnostics: LeadQualityDiagnostics = {
+      totalFetched: allContacts.length,
+      filteredInvalidEmail: 0,
+      filteredDnc: 0,
+      missingPhoneOrEmail: 0,
+      exported: 0,
+    };
+    
+    const leads: Lead[] = [];
+    for (let i = 0; i < allContacts.length && leads.length < maxLeads; i++) {
+      const result = mapAudienceLabContactToLead(allContacts[i], input, i);
+      if (result.lead) {
+        leads.push(result.lead);
+      } else {
+        switch (result.excluded) {
+          case 'invalid_email': diagnostics.filteredInvalidEmail++; break;
+          case 'dnc': diagnostics.filteredDnc++; break;
+          case 'missing_contact': diagnostics.missingPhoneOrEmail++; break;
+        }
+      }
+    }
+    diagnostics.exported = leads.length;
+
+    if (leads.length === 0) {
+      return {
+        ok: false,
+        error: {
+          code: 'provider_building',
+          message: 'Contacts found but all filtered out. May still be building.',
+          details: { audienceId, requestId: effectiveRequestId, retryAfterSeconds: 2, diagnostics },
+        },
+      };
+    }
+
+    return { ok: true, leads, audienceId, requestId: effectiveRequestId, diagnostics };
+  } catch (err) {
+    if (
+      err instanceof AudienceLabAuthError ||
+      err instanceof AudienceLabUpstreamError ||
+      err instanceof AudienceLabContractError ||
+      err instanceof AudienceLabAsyncError
+    ) {
+      throw err;
+    }
+    
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    return {
+      ok: false,
+      error: {
+        code: 'provider_error',
+        message: `AudienceLab fetch members failed: ${message}`,
       },
     };
   }

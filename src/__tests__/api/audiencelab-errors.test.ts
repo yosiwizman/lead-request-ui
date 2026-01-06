@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { generateLeads } from '../../../api/_lib/providers/audiencelab';
 import type { GenerateInput } from '../../../api/_lib/types';
+import { AudienceLabAuthError, AudienceLabUpstreamError } from '../../../api/_lib/types';
 
 // Mock fetch globally
 const mockFetch = vi.fn();
@@ -37,20 +38,59 @@ describe('AudienceLab provider error handling', () => {
     }
   });
 
-  it('returns provider_error on audience creation failure', async () => {
+  it('throws AudienceLabAuthError on 401 during audience creation', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: false,
       status: 401,
+      headers: new Map([['x-request-id', 'req-123']]),
       text: async () => '{"error":"Unauthorized"}',
     });
 
-    const result = await generateLeads(testInput);
+    await expect(generateLeads(testInput)).rejects.toThrow(AudienceLabAuthError);
+    
+    try {
+      await generateLeads(testInput);
+    } catch (err) {
+      expect(err).toBeInstanceOf(AudienceLabAuthError);
+      if (err instanceof AudienceLabAuthError) {
+        expect(err.code).toBe('AUDIENCELAB_UNAUTHORIZED');
+        expect(err.status).toBe(401);
+        expect(err.endpoint).toBe('/audiences');
+        expect(err.method).toBe('POST');
+        // Verify hint is present
+        expect(err.hint).toContain('WRITE required');
+      }
+    }
+  });
 
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe('provider_error');
-      expect(result.error.message).toContain('401');
-      expect(result.error.message).toContain('audience creation');
+  it('throws AudienceLabAuthError on 403 during audience creation', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 403,
+      headers: new Map(),
+      text: async () => '{"error":"Forbidden"}',
+    });
+
+    await expect(generateLeads(testInput)).rejects.toThrow(AudienceLabAuthError);
+  });
+
+  it('throws AudienceLabUpstreamError on 5xx during audience creation', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      headers: new Map(),
+      text: async () => '{"error":"Service Unavailable"}',
+    });
+
+    await expect(generateLeads(testInput)).rejects.toThrow(AudienceLabUpstreamError);
+    
+    try {
+      await generateLeads(testInput);
+    } catch (err) {
+      if (err instanceof AudienceLabUpstreamError) {
+        expect(err.code).toBe('AUDIENCELAB_UPSTREAM_ERROR');
+        expect(err.status).toBe(503);
+      }
     }
   });
 
@@ -69,27 +109,38 @@ describe('AudienceLab provider error handling', () => {
     }
   });
 
-  it('returns provider_error on members fetch failure', async () => {
+  it('throws AudienceLabUpstreamError on 5xx during members fetch', async () => {
     // First call: successful audience creation
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: async () => ({ id: 'audience-123' }),
     });
-    // Second call: failed members fetch
+    // Second call: failed members fetch with 5xx
     mockFetch.mockResolvedValueOnce({
       ok: false,
       status: 500,
+      headers: new Map([['x-request-id', 'req-456']]),
       text: async () => '{"error":"Internal Server Error"}',
     });
 
-    const result = await generateLeads(testInput);
+    await expect(generateLeads(testInput)).rejects.toThrow(AudienceLabUpstreamError);
+  });
 
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe('provider_error');
-      expect(result.error.message).toContain('500');
-      expect(result.error.message).toContain('fetching members');
-    }
+  it('throws AudienceLabAuthError on 401 during members fetch', async () => {
+    // First call: successful audience creation
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: 'audience-123' }),
+    });
+    // Second call: 401 on members fetch
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      headers: new Map(),
+      text: async () => '{"error":"Unauthorized"}',
+    });
+
+    await expect(generateLeads(testInput)).rejects.toThrow(AudienceLabAuthError);
   });
 
   it('returns provider_no_results when no members found', async () => {
@@ -195,5 +246,51 @@ describe('AudienceLab provider error handling', () => {
     if (result.ok) {
       expect(result.leads).toHaveLength(50);
     }
+  });
+});
+
+describe('AudienceLabAuthError', () => {
+  it('never includes API key in error message or context', () => {
+    const testKey = 'sk_live_supersecret123456';
+    const err = new AudienceLabAuthError({
+      status: 401,
+      endpoint: '/audiences',
+      method: 'POST',
+      requestId: 'req-123',
+    });
+
+    // Check message doesn't contain key
+    expect(err.message).not.toContain(testKey);
+    expect(err.message).not.toContain('supersecret');
+    
+    // Check safe context doesn't contain key
+    const ctx = err.toSafeContext();
+    const ctxString = JSON.stringify(ctx);
+    expect(ctxString).not.toContain(testKey);
+    expect(ctxString).not.toContain('supersecret');
+    
+    // Verify it has expected safe fields
+    expect(ctx.code).toBe('AUDIENCELAB_UNAUTHORIZED');
+    expect(ctx.status).toBe(401);
+    expect(ctx.endpoint).toBe('/audiences');
+    expect(ctx.hint).toBeDefined();
+  });
+
+  it('AudienceLabUpstreamError never includes sensitive data', () => {
+    const err = new AudienceLabUpstreamError({
+      status: 503,
+      endpoint: '/audiences/123',
+      method: 'GET',
+      requestId: 'req-789',
+      body: 'secret data that should not appear',
+    });
+
+    const ctx = err.toSafeContext();
+    const ctxString = JSON.stringify(ctx);
+    
+    // Body should not be in safe context
+    expect(ctxString).not.toContain('secret data');
+    expect(ctx.code).toBe('AUDIENCELAB_UPSTREAM_ERROR');
+    expect(ctx.status).toBe(503);
   });
 });

@@ -1,4 +1,5 @@
 import type { Lead, GenerateInput, ProviderResult } from '../types.js';
+import { AudienceLabAuthError, AudienceLabUpstreamError } from '../types.js';
 
 const BASE_URL = process.env.AUDIENCELAB_BASE_URL || 'https://api.audiencelab.io';
 
@@ -139,14 +140,38 @@ export async function generateLeads(
   try {
     // Step 1: Create an audience
     const audiencePayload = buildAudiencePayload(input);
+    const createUrl = `${BASE_URL}/audiences`;
     
-    const createResponse = await fetch(`${BASE_URL}/audiences`, {
+    const createResponse = await fetch(createUrl, {
       method: 'POST',
       headers,
       body: JSON.stringify(audiencePayload),
     });
 
     if (!createResponse.ok) {
+      const requestId = createResponse.headers.get('x-request-id') ?? undefined;
+      
+      // Throw typed error for auth failures
+      if (createResponse.status === 401 || createResponse.status === 403) {
+        throw new AudienceLabAuthError({
+          status: createResponse.status,
+          endpoint: '/audiences',
+          method: 'POST',
+          requestId,
+        });
+      }
+      
+      // Throw typed error for upstream failures (5xx)
+      if (createResponse.status >= 500) {
+        throw new AudienceLabUpstreamError({
+          status: createResponse.status,
+          endpoint: '/audiences',
+          method: 'POST',
+          requestId,
+        });
+      }
+      
+      // Other errors (4xx except 401/403)
       const errorBody = await createResponse.text();
       return {
         ok: false,
@@ -187,6 +212,30 @@ export async function generateLeads(
       });
 
       if (!membersResponse.ok) {
+        const requestId = membersResponse.headers.get('x-request-id') ?? undefined;
+        const memberEndpoint = `/audiences/${audienceId}`;
+        
+        // Throw typed error for auth failures
+        if (membersResponse.status === 401 || membersResponse.status === 403) {
+          throw new AudienceLabAuthError({
+            status: membersResponse.status,
+            endpoint: memberEndpoint,
+            method: 'GET',
+            requestId,
+          });
+        }
+        
+        // Throw typed error for upstream failures (5xx)
+        if (membersResponse.status >= 500) {
+          throw new AudienceLabUpstreamError({
+            status: membersResponse.status,
+            endpoint: memberEndpoint,
+            method: 'GET',
+            requestId,
+          });
+        }
+        
+        // Other errors
         const errorBody = await membersResponse.text();
         return {
           ok: false,
@@ -238,6 +287,11 @@ export async function generateLeads(
 
     return { ok: true, leads };
   } catch (err) {
+    // Re-throw typed errors for upstream handling
+    if (err instanceof AudienceLabAuthError || err instanceof AudienceLabUpstreamError) {
+      throw err;
+    }
+    
     const message = err instanceof Error ? err.message : 'Unknown error';
     return {
       ok: false,

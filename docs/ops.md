@@ -94,16 +94,60 @@
 
 ### AudienceLab Provider (`api/_lib/providers/audiencelab.ts`)
 - Creates audience via AudienceLab API, then fetches audience members.
-- Requires `AUDIENCELAB_API_KEY` env var.
+- Requires `AUDIENCELAB_API_KEY` env var with **WRITE permission**.
 - Uses ZIP code lookup to enhance geographic targeting.
 - Maps AudienceLab contact fields to Lead schema.
-- Returns `provider_error` on API failure, `provider_no_results` on empty results.
+- Throws typed errors: `AudienceLabAuthError` (401/403), `AudienceLabUpstreamError` (5xx).
+- Returns `provider_error` on other API failures, `provider_no_results` on empty results.
 - Source field: `audiencelab`.
 - Caps results at 50 leads per request.
 
 ### Error Mapping
+- `AUDIENCELAB_UNAUTHORIZED` → HTTP 502 (auth failure, includes hint)
+- `AUDIENCELAB_UPSTREAM_ERROR` → HTTP 502 (service error)
 - `provider_error` → HTTP 502 (Bad Gateway)
 - `provider_no_results` → HTTP 404 (Not Found)
+
+## AudienceLab API Key Management
+
+### Creating/Rotating the Key
+1. Log in to AudienceLab dashboard
+2. Navigate to Settings → API Keys
+3. Create a new key with **WRITE** permission (required for audience creation)
+4. Copy the key immediately (it won't be shown again)
+5. Update `AUDIENCELAB_API_KEY` in Vercel env vars (see below)
+6. Delete the old key if rotating
+
+### Smoke Test
+Verify the key is valid before deploying:
+```bash
+# Local verification
+AUDIENCELAB_API_KEY=your_key pnpm smoke:audiencelab
+
+# Or if env var is already set
+pnpm smoke:audiencelab
+```
+The smoke test calls `GET /audiences?page=1&page_size=1` and reports:
+- ✅ Success: key is valid
+- ❌ 401/403: auth failure with resolution steps
+- Key is masked in output (shows only first/last 4 chars)
+
+### Vercel Env Var Rotation
+1. Go to Vercel project → Settings → Environment Variables
+2. Find `AUDIENCELAB_API_KEY`
+3. Click Edit → paste new key → mark as Sensitive → Save
+4. Update for **both** Preview and Production environments
+5. Trigger a redeploy: Deployments → ... → Redeploy
+6. Verify with smoke test against deployed endpoint
+
+### Security Notes
+- **Never** paste API keys into GitHub issues, PRs, or commit messages
+- **Never** log or display the full API key; use masking (first/last 4 chars)
+- Keys should only be entered into:
+  - Vercel env vars (via dashboard, marked Sensitive)
+  - Local terminal for smoke testing
+  - `.env.local` (gitignored) for local dev
+- Typed errors (`AudienceLabAuthError`) never include the key in message or context
 
 ## Rationale: Service Role Key Stays Server-only
 

@@ -97,14 +97,19 @@
 - Requires `AUDIENCELAB_API_KEY` env var with **WRITE permission**.
 - Uses ZIP code lookup to enhance geographic targeting.
 - Maps AudienceLab contact fields to Lead schema.
-- Throws typed errors: `AudienceLabAuthError` (401/403), `AudienceLabUpstreamError` (5xx).
+- Throws typed errors: `AudienceLabAuthError` (401/403), `AudienceLabUpstreamError` (5xx), `AudienceLabContractError` (response shape mismatch).
+- Uses robust ID extraction (`api/_lib/audiencelab-response.ts`) to handle various response shapes.
 - Returns `provider_error` on other API failures, `provider_no_results` on empty results.
 - Source field: `audiencelab`.
 - Caps results at 50 leads per request.
+- Includes `requestId` in all error responses for log correlation.
 
 ### Error Mapping
 - `AUDIENCELAB_UNAUTHORIZED` → HTTP 502 (auth failure, includes hint)
 - `AUDIENCELAB_UPSTREAM_ERROR` → HTTP 502 (service error)
+- `AUDIENCELAB_NO_AUDIENCE_ID` → HTTP 502 (response contract mismatch)
+- `AUDIENCELAB_ERROR_PAYLOAD` → HTTP 502 (200 response with error body)
+- `AUDIENCELAB_ASYNC_RESPONSE` → HTTP 502 (job/async response)
 - `provider_error` → HTTP 502 (Bad Gateway)
 - `provider_no_results` → HTTP 404 (Not Found)
 
@@ -176,6 +181,57 @@ Our codebase now includes a `sanitizeByteString()` utility (`api/_lib/bytestring
 - Returns a clean `ConfigError` with actionable hints instead of crashing
 
 If you see a `CONFIG_MISSING`, `CONFIG_EMPTY`, or `INVALID_HEADER_VALUE` error in the JSON response, check the `hint` field for resolution steps.
+
+### Troubleshooting: No Audience ID Returned
+
+**Symptom:**
+```
+AudienceLab did not return an audience ID
+```
+or error code `AUDIENCELAB_NO_AUDIENCE_ID` in the JSON response.
+
+**Cause:**
+The AudienceLab API returned a 200 response, but the response body doesn't contain an audience ID in any of the expected locations.
+
+**What we check:**
+- Root level: `id`, `audience_id`, `audienceId`
+- Nested: `data.id`, `audience.id`, `result.id`
+- Array: `[0].id`, `data[0].id`
+- Location header: `/audiences/<id>`
+
+**Using the requestId:**
+Every error response includes a `requestId` field (e.g., `req_abc123_xyz`). Use this to:
+1. Find related logs in Vercel: Deployments → View Function Logs → search for the requestId
+2. Report to AudienceLab support with the requestId for correlation
+
+**Response shape in logs:**
+The `responseShape` field shows the sanitized structure of the response (key names only, no values). Example:
+```
+object{status,message,data:object{name,created_at}}
+```
+This helps diagnose contract mismatches without exposing sensitive data.
+
+**Resolution:**
+1. Check if AudienceLab API documentation has changed
+2. Contact AudienceLab support with the requestId
+3. If the response shape shows `job_id` or `task_id`, the API may be returning async results (error code will be `AUDIENCELAB_ASYNC_RESPONSE`)
+
+### Troubleshooting: 200 Response with Error
+
+**Symptom:**
+Error code `AUDIENCELAB_ERROR_PAYLOAD` with an `upstreamMessage` field.
+
+**Cause:**
+The AudienceLab API returned HTTP 200 but the body contains an error indicator:
+- `{ error: "..." }`
+- `{ errors: [...] }`
+- `{ success: false, message: "..." }`
+
+**Resolution:**
+The `upstreamMessage` field contains the error from AudienceLab. Common causes:
+- Rate limiting
+- Invalid request parameters
+- Account/workspace issues
 
 ## Rationale: Service Role Key Stays Server-only
 

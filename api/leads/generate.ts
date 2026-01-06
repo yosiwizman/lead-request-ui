@@ -4,7 +4,12 @@ import { generateLeads } from '../_lib/providers/index.js';
 import { leadsToCsv } from '../_lib/csv.js';
 import { validatePayload } from '../_lib/validation.js';
 import { jsonError } from '../_lib/json.js';
-import { AudienceLabAuthError, AudienceLabUpstreamError } from '../_lib/types.js';
+import {
+  AudienceLabAuthError,
+  AudienceLabUpstreamError,
+  AudienceLabContractError,
+  AudienceLabAsyncError,
+} from '../_lib/types.js';
 import { ConfigError } from '../_lib/bytestring.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -47,6 +52,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         err.code,
         'AudienceLab upstream service error.',
         err.toSafeContext()
+      );
+    }
+    // Handle contract errors (response shape mismatch)
+    if (err instanceof AudienceLabContractError) {
+      return jsonError(
+        res,
+        502,
+        err.code,
+        err.message,
+        { ...err.toSafeContext(), hint: err.hint }
+      );
+    }
+    // Handle async/job responses
+    if (err instanceof AudienceLabAsyncError) {
+      return jsonError(
+        res,
+        502,
+        err.code,
+        'AudienceLab returned an async job response.',
+        { ...err.toSafeContext(), hint: err.hint }
       );
     }
     // Handle configuration errors (e.g. BOM in API key)

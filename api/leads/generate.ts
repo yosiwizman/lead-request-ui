@@ -1,9 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 import { generateLeads } from '../_lib/providers/index.js';
-import { leadsToCsv } from '../_lib/csv';
-import { validatePayload } from '../_lib/validation';
-import { jsonError } from '../_lib/json';
+import { leadsToCsv } from '../_lib/csv.js';
+import { validatePayload } from '../_lib/validation.js';
+import { jsonError } from '../_lib/json.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {

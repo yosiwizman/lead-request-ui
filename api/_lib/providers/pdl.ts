@@ -1,4 +1,4 @@
-import type { Lead, GenerateInput, ProviderResult } from '../types';
+import type { Lead, GenerateInput, ProviderResult } from '../types.js';
 
 interface PDLPerson {
   first_name?: string;

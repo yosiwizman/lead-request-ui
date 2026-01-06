@@ -1,6 +1,6 @@
-import type { GenerateInput, ProviderResult } from '../types';
-import { generateLeads as mockGenerateLeads } from './mock';
-import { generateLeads as pdlGenerateLeads } from './pdl';
+import type { GenerateInput, ProviderResult } from '../types.js';
+import { generateLeads as mockGenerateLeads } from './mock.js';
+import { generateLeads as pdlGenerateLeads } from './pdl.js';
 
 export type ProviderName = 'mock' | 'pdl';
 

@@ -1,4 +1,4 @@
-import type { Lead } from './types';
+import type { Lead } from './types.js';
 
 const HEADERS = ['first_name', 'last_name', 'address', 'city', 'state', 'zip', 'phone', 'email', 'lead_type', 'tags', 'source'] as const;
 

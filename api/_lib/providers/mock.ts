@@ -1,4 +1,4 @@
-import type { Lead, GenerateInput, ProviderResult } from '../types';
+import type { Lead, GenerateInput, ProviderResult } from '../types.js';
 
 function seededRandom(seed: number) {
   let s = seed >>> 0;

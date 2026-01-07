@@ -218,6 +218,24 @@ export interface ProviderError {
 }
 
 /**
+ * Match-by accuracy tier for lead quality ranking.
+ * Based on AudienceLab SKIPTRACE_MATCH_BY field.
+ * - high: Contains ADDRESS + EMAIL (most accurate)
+ * - medium: Contains NAME + ADDRESS
+ * - low: Any other match method
+ */
+export type MatchByTier = 'high' | 'medium' | 'low';
+
+/**
+ * Counts per match-by accuracy tier.
+ */
+export interface MatchByTierCounts {
+  high: number;
+  medium: number;
+  low: number;
+}
+
+/**
  * Diagnostics for lead quality filtering (never includes PII).
  */
 export interface LeadQualityDiagnostics {
@@ -225,8 +243,11 @@ export interface LeadQualityDiagnostics {
   kept: number;
   filteredMissingPhone: number;
   filteredInvalidEmail: number;
+  filteredInvalidEmailEsp: number;
+  filteredEmailTooOld: number;
   filteredDnc: number;
   missingNameOrAddressCount: number;
+  matchByTier: MatchByTierCounts;
 }
 
 /**
@@ -237,8 +258,11 @@ export interface QualitySummary {
   kept: number;
   filteredMissingPhone: number;
   filteredInvalidEmail: number;
+  filteredInvalidEmailEsp: number;
+  filteredEmailTooOld: number;
   filteredDnc: number;
   missingNameOrAddressCount: number;
+  matchByTier: MatchByTierCounts;
 }
 
 /**

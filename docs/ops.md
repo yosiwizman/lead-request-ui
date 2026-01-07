@@ -58,9 +58,9 @@
   - `useCase` optional (defaults to `both`): `call` | `email` | `both`
 
 **Quality Preset (useCase) Behavior:**
-- `call`: Requires phone present; contacts without phone are filtered out
-- `email`: Requires validated email present; contacts without valid email are filtered out
-- `both`: Either phone or email required (default, most permissive)
+- `call`: Requires phone present; excludes DNC-flagged contacts (B2C only)
+- `email`: Requires Valid(Esp) email + LAST_SEEN within 30 days
+- `both`: Either phone or email required; excludes DNC-flagged contacts (B2C only)
 
 **Responses:**
 - **200 OK** (immediate success):
@@ -138,6 +138,52 @@ Based on AudienceLab Fields Guide for high-quality lead data:
 - **Phone**: `SKIPTRACE_WIRELESS_NUMBERS` > `SKIPTRACE_LANDLINE_NUMBERS` > `mobile_phone` > `phone`
 - **DNC Filter**: Exclude contacts where `DNC` = "Y"
 
+## Recipe Engine
+
+The Recipe Engine applies preset-specific rules to maximize lead quality based on AudienceLab's documented field best practices.
+
+### Recipe Rules by Preset
+
+**Call Preset:**
+- Requires phone present
+- Excludes DNC-flagged contacts (B2C/residential only; B2B ignores DNC)
+- No freshness requirement
+
+**Email Preset:**
+- Requires email with `Valid (Esp)` validation status (highest email deliverability)
+- Requires `LAST_SEEN` within 30 days (freshness window)
+- Contacts with `LAST_SEEN` > 30 days are excluded as `email_too_old`
+- Contacts without `LAST_SEEN` field pass (field may not be populated)
+
+**Both Preset:**
+- Either phone or email required
+- Excludes DNC-flagged contacts (B2C only)
+- No freshness requirement
+
+### Accuracy Tier Ranking
+
+Instead of over-filtering, the recipe engine ranks contacts by accuracy using `SKIPTRACE_MATCH_BY` (B2C) or `SKIPTRACE_B2B_MATCH_BY` (B2B):
+
+**High Tier:** ADDRESS + EMAIL match
+- Most accurate; address and email both confirmed
+
+**Medium Tier:** NAME + ADDRESS match
+- Good accuracy; name and address confirmed
+
+**Low Tier:** Other match methods
+- PHONE, NAME only, or no match_by data
+
+Leads are sorted by tier (high → medium → low) before applying the 50-lead cap, ensuring the highest-quality leads are prioritized.
+
+### Match Tier Display
+
+The UI displays tier breakdown in the Quality Summary:
+- `High: N` — Leads matched by ADDRESS + EMAIL
+- `Medium: N` — Leads matched by NAME + ADDRESS
+- `Low: N` — Leads matched by other methods
+
+This helps users understand the accuracy distribution of their leads without exposing PII.
+
 ### Quality Summary Response
 
 Each successful response (200 OK) includes a `quality` object with filtering metrics:
@@ -148,8 +194,11 @@ Each successful response (200 OK) includes a `quality` object with filtering met
     "kept": 35,
     "filteredMissingPhone": 8,
     "filteredInvalidEmail": 3,
+    "filteredInvalidEmailEsp": 2,
+    "filteredEmailTooOld": 1,
     "filteredDnc": 2,
-    "missingNameOrAddressCount": 5
+    "missingNameOrAddressCount": 5,
+    "matchByTier": { "high": 20, "medium": 10, "low": 5 }
   }
 }
 ```
@@ -158,9 +207,12 @@ Each successful response (200 OK) includes a `quality` object with filtering met
 - `totalFetched`: Raw contacts retrieved from AudienceLab
 - `kept`: Contacts included in the final CSV export
 - `filteredMissingPhone`: Excluded due to missing phone (applies to `useCase=call`)
-- `filteredInvalidEmail`: Excluded due to missing/invalid email (applies to `useCase=email`)
+- `filteredInvalidEmail`: Excluded due to missing/invalid email
+- `filteredInvalidEmailEsp`: Excluded due to email not being Valid(Esp) (applies to `useCase=email`)
+- `filteredEmailTooOld`: Excluded due to LAST_SEEN > 30 days (applies to `useCase=email`)
 - `filteredDnc`: Excluded due to DNC (Do Not Call) flag (B2C only)
 - `missingNameOrAddressCount`: Kept contacts that are missing name or address (informational)
+- `matchByTier`: Breakdown of kept leads by accuracy tier (high/medium/low)
 
 ### Field Coverage Diagnostics
 

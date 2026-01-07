@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mapAudienceLabContactToLead, lookupZipLocation, computeContactsCoverage, computeLeadsCoverage } from '../../../api/_lib/providers/audiencelab';
+import { mapAudienceLabContactToLead, lookupZipLocation, computeContactsCoverage, computeLeadsCoverage, buildRecipe, evaluateMatchByTier } from '../../../api/_lib/providers/audiencelab';
 import type { GenerateInput, Lead } from '../../../api/_lib/types';
 
 describe('lookupZipLocation', () => {
@@ -193,8 +193,12 @@ describe('mapAudienceLabContactToLead with useCase filtering', () => {
     expect(result.excluded).toBe('invalid_email');
   });
 
-  it('useCase=email: includes contacts with valid email', () => {
-    const contact = { first_name: 'Test', email: 'test@example.com' };
+  it('useCase=email: includes contacts with Valid(Esp) email', () => {
+    const contact = {
+      first_name: 'Test',
+      PERSONAL_EMAIL: 'test@example.com',
+      PERSONAL_EMAIL_VALIDATION_STATUS: 'Valid (Esp)',
+    };
     const input: GenerateInput = { ...baseInput, useCase: 'email' };
     const result = mapAudienceLabContactToLead(contact, input, 0);
     
@@ -439,5 +443,230 @@ describe('computeLeadsCoverage', () => {
     expect(resultStr).not.toContain('SECRET');
     expect(resultStr).not.toContain('domain.com');
     expect(resultStr).not.toContain('99999');
+  });
+});
+
+// =============================================================================
+// RECIPE ENGINE TESTS
+// =============================================================================
+
+describe('buildRecipe', () => {
+  it('builds call recipe for B2C with DNC exclusion', () => {
+    const recipe = buildRecipe('residential', 'call');
+    
+    expect(recipe.requirePhone).toBe(true);
+    expect(recipe.requireEmailValidEsp).toBe(false);
+    expect(recipe.excludeDnc).toBe(true);
+    expect(recipe.freshnessDays).toBe(0);
+  });
+
+  it('builds call recipe for B2B without DNC exclusion', () => {
+    const recipe = buildRecipe('commercial', 'call');
+    
+    expect(recipe.requirePhone).toBe(true);
+    expect(recipe.excludeDnc).toBe(false);
+  });
+
+  it('builds email recipe with Valid(Esp) requirement and freshness', () => {
+    const recipe = buildRecipe('residential', 'email');
+    
+    expect(recipe.requireEmailValidEsp).toBe(true);
+    expect(recipe.requirePhone).toBe(false);
+    expect(recipe.freshnessDays).toBe(30);
+  });
+
+  it('builds both recipe with DNC exclusion for B2C', () => {
+    const recipe = buildRecipe('residential', 'both');
+    
+    expect(recipe.requirePhone).toBe(false);
+    expect(recipe.requireEmailValidEsp).toBe(false);
+    expect(recipe.excludeDnc).toBe(true);
+    expect(recipe.freshnessDays).toBe(0);
+  });
+});
+
+describe('evaluateMatchByTier', () => {
+  it('returns high tier for ADDRESS + EMAIL match', () => {
+    const contact = { SKIPTRACE_MATCH_BY: 'ADDRESS,EMAIL' };
+    expect(evaluateMatchByTier(contact, 'residential')).toBe('high');
+  });
+
+  it('returns high tier for B2B COMPANY_ADDRESS + EMAIL', () => {
+    const contact = { SKIPTRACE_B2B_MATCH_BY: 'COMPANY_ADDRESS,EMAIL' };
+    expect(evaluateMatchByTier(contact, 'commercial')).toBe('high');
+  });
+
+  it('returns medium tier for NAME + ADDRESS match', () => {
+    const contact = { SKIPTRACE_MATCH_BY: 'NAME,ADDRESS' };
+    expect(evaluateMatchByTier(contact, 'residential')).toBe('medium');
+  });
+
+  it('returns low tier for other match methods', () => {
+    const contact = { SKIPTRACE_MATCH_BY: 'PHONE' };
+    expect(evaluateMatchByTier(contact, 'residential')).toBe('low');
+  });
+
+  it('returns low tier when no match_by field', () => {
+    const contact = {};
+    expect(evaluateMatchByTier(contact, 'residential')).toBe('low');
+  });
+
+  it('is case-insensitive', () => {
+    const contact = { SKIPTRACE_MATCH_BY: 'address,email' };
+    expect(evaluateMatchByTier(contact, 'residential')).toBe('high');
+  });
+});
+
+describe('Recipe Engine: Valid(Esp) email filtering', () => {
+  const baseInput: GenerateInput = {
+    leadRequest: 'roofing',
+    zips: ['33101'],
+    scope: 'residential',
+    useCase: 'email',
+  };
+
+  it('accepts email with Valid (Esp) status', () => {
+    const contact = {
+      first_name: 'Test',
+      PERSONAL_EMAIL: 'test@example.com',
+      PERSONAL_EMAIL_VALIDATION_STATUS: 'Valid (Esp)',
+    };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
+    
+    expect(result.lead).not.toBeNull();
+    expect(result.lead!.email).toBe('test@example.com');
+  });
+
+  it('rejects email without Valid (Esp) status for email useCase', () => {
+    const contact = {
+      first_name: 'Test',
+      PERSONAL_EMAIL: 'test@example.com',
+      PERSONAL_EMAIL_VALIDATION_STATUS: 'Valid', // Not Esp
+    };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
+    
+    expect(result.lead).toBeNull();
+    expect(result.excluded).toBe('invalid_email_esp');
+  });
+
+  it('rejects email with Invalid status', () => {
+    const contact = {
+      first_name: 'Test',
+      PERSONAL_EMAIL: 'test@example.com',
+      PERSONAL_EMAIL_VALIDATION_STATUS: 'Invalid',
+    };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
+    
+    expect(result.lead).toBeNull();
+    expect(result.excluded).toBe('invalid_email_esp'); // Invalid != Valid(Esp)
+  });
+});
+
+describe('Recipe Engine: LAST_SEEN freshness', () => {
+  const emailInput: GenerateInput = {
+    leadRequest: 'roofing',
+    zips: ['33101'],
+    scope: 'residential',
+    useCase: 'email',
+  };
+
+  it('accepts contact with recent LAST_SEEN', () => {
+    const recentDate = new Date();
+    recentDate.setDate(recentDate.getDate() - 10); // 10 days ago
+    
+    const contact = {
+      first_name: 'Test',
+      PERSONAL_EMAIL: 'test@example.com',
+      PERSONAL_EMAIL_VALIDATION_STATUS: 'Valid (Esp)',
+      LAST_SEEN: recentDate.toISOString(),
+    };
+    const result = mapAudienceLabContactToLead(contact, emailInput, 0);
+    
+    expect(result.lead).not.toBeNull();
+  });
+
+  it('rejects contact with old LAST_SEEN for email useCase', () => {
+    const oldDate = new Date();
+    oldDate.setDate(oldDate.getDate() - 60); // 60 days ago (> 30 day window)
+    
+    const contact = {
+      first_name: 'Test',
+      PERSONAL_EMAIL: 'test@example.com',
+      PERSONAL_EMAIL_VALIDATION_STATUS: 'Valid (Esp)',
+      LAST_SEEN: oldDate.toISOString(),
+    };
+    const result = mapAudienceLabContactToLead(contact, emailInput, 0);
+    
+    expect(result.lead).toBeNull();
+    expect(result.excluded).toBe('email_too_old');
+  });
+
+  it('accepts contact without LAST_SEEN field', () => {
+    const contact = {
+      first_name: 'Test',
+      PERSONAL_EMAIL: 'test@example.com',
+      PERSONAL_EMAIL_VALIDATION_STATUS: 'Valid (Esp)',
+      // No LAST_SEEN
+    };
+    const result = mapAudienceLabContactToLead(contact, emailInput, 0);
+    
+    expect(result.lead).not.toBeNull();
+  });
+
+  it('does not apply freshness check for call useCase', () => {
+    const oldDate = new Date();
+    oldDate.setDate(oldDate.getDate() - 60);
+    
+    const contact = {
+      first_name: 'Test',
+      phone: '555-1234',
+      LAST_SEEN: oldDate.toISOString(),
+    };
+    const callInput: GenerateInput = { ...emailInput, useCase: 'call' };
+    const result = mapAudienceLabContactToLead(contact, callInput, 0);
+    
+    expect(result.lead).not.toBeNull();
+  });
+});
+
+describe('Recipe Engine: match_by tier in result', () => {
+  const baseInput: GenerateInput = {
+    leadRequest: 'roofing',
+    zips: ['33101'],
+    scope: 'residential',
+    useCase: 'both',
+  };
+
+  it('includes tier in result for high accuracy contact', () => {
+    const contact = {
+      first_name: 'Test',
+      email: 'test@example.com',
+      SKIPTRACE_MATCH_BY: 'ADDRESS,EMAIL',
+    };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
+    
+    expect(result.tier).toBe('high');
+  });
+
+  it('includes tier in result for medium accuracy contact', () => {
+    const contact = {
+      first_name: 'Test',
+      email: 'test@example.com',
+      SKIPTRACE_MATCH_BY: 'NAME,ADDRESS',
+    };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
+    
+    expect(result.tier).toBe('medium');
+  });
+
+  it('includes tier in result for excluded contacts', () => {
+    const contact = {
+      // No phone or email - will be excluded
+      SKIPTRACE_MATCH_BY: 'ADDRESS,EMAIL',
+    };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
+    
+    expect(result.lead).toBeNull();
+    expect(result.tier).toBe('high'); // Tier still computed
   });
 });

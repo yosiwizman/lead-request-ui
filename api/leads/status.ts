@@ -15,6 +15,12 @@ import {
 } from '../_lib/types.js';
 import { ConfigError } from '../_lib/bytestring.js';
 import { generateRequestId } from '../_lib/audiencelab-response.js';
+import { requireSession } from '../_lib/auth.js';
+import {
+  findExportByAudienceId,
+  updateExportSuccess,
+  updateExportError,
+} from '../_lib/exports-db.js';
 
 /**
  * Structured log entry (safe for Vercel logs - no PII).
@@ -46,6 +52,9 @@ function sleep(ms: number): Promise<void> {
  *   4xx/5xx: Various errors
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // Require authentication (returns non-null if 401 sent)
+  if (requireSession(req, res)) return;
+  
   const requestId = generateRequestId();
   const startTime = Date.now();
 
@@ -65,6 +74,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const leadScope = typeof body.leadScope === 'string' ? body.leadScope.toLowerCase().trim() : '';
   const useCase = typeof body.useCase === 'string' ? body.useCase.toLowerCase().trim() as UseCase : 'both';
   const originalRequestId = typeof body.requestId === 'string' ? body.requestId : undefined;
+  // exportId may be passed from generate.ts 202 response
+  const exportIdFromBody = typeof body.exportId === 'string' ? body.exportId.trim() : undefined;
 
   // Validate required fields
   if (!audienceId) {
@@ -84,6 +95,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   logEvent('status_start', { requestId, audienceId, originalRequestId });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Resolve export record (by exportId or audienceId)
+  // ─────────────────────────────────────────────────────────────────────────
+  let exportId: string | null = exportIdFromBody ?? null;
+  if (!exportId) {
+    try {
+      const found = await findExportByAudienceId(audienceId);
+      exportId = found?.id ?? null;
+    } catch (err) {
+      console.error('[status] Failed to find export by audienceId:', err);
+    }
+  }
+  if (exportId) {
+    logEvent('status_export_found', { requestId, exportId });
+  }
 
   // Validate provider configuration
   try {
@@ -173,6 +200,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           fieldCoverage: lastResult.fieldCoverage,
         });
 
+        // ─────────────────────────────────────────────────────────────────────
+        // Update export record with success
+        // ─────────────────────────────────────────────────────────────────────
+        if (exportId) {
+          try {
+            await updateExportSuccess(exportId, {
+              status: 'success',
+              totalFetched: lastResult.diagnostics?.totalFetched ?? leads.length,
+              kept: leads.length,
+              diagnostics: lastResult.diagnostics ?? null,
+              fieldCoverage: lastResult.fieldCoverage ?? null,
+              bucket,
+              path,
+            });
+            logEvent('export_updated', { requestId, exportId, status: 'success' });
+          } catch (dbErr) {
+            console.error('[status] Failed to update export record:', dbErr);
+          }
+        }
+
         return res.status(200).json({
           ok: true,
           count: leads.length,
@@ -182,6 +229,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           expiresInSeconds,
           audienceId,
           requestId,
+          exportId,
           quality: lastResult.diagnostics,
           fieldCoverage: lastResult.fieldCoverage,
         });
@@ -253,6 +301,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // provider_no_results after building is complete - definitively no results
     logEvent('status_no_results', { requestId, audienceId, code: err.code });
+    
+    // Update export with no_results error
+    if (exportId) {
+      updateExportError(exportId, { status: 'no_results', errorCode: err.code, errorMessage: err.message }).catch(console.error);
+    }
+    
     return jsonError(res, 404, err.code, err.message, err.details);
   }
 

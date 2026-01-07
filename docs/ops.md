@@ -570,3 +570,127 @@ The `upstreamMessage` field contains the error from AudienceLab. Common causes:
 - The service role key grants full access to Storage and Database.
 - Exposing it to the client would allow unrestricted file operations.
 - Therefore, it must be used only in serverless functions (Vercel) or Edge Functions and never bundled into client code.
+
+---
+
+## App-Level Access Control (Authentication)
+
+### Overview
+
+The app uses passcode-based authentication with httpOnly session cookies to prevent unauthorized access to lead generation. This is NOT user authentication—it's app-level access control.
+
+### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `APP_PASSCODE` | The passcode required to access the app. Required in production. |
+| `SESSION_SECRET` | Secret key for signing session tokens. Must be 32+ characters. Required in production. |
+| `SESSION_TTL_SECONDS` | Session duration in seconds. Default: 604800 (7 days). |
+| `AUTH_DISABLED_FOR_TESTS` | Set to `true` to bypass auth (tests only). |
+
+### How It Works
+
+1. User visits the app → frontend calls `GET /api/auth/me`
+2. If 401, show login screen
+3. User enters passcode → `POST /api/auth/login { passcode }`
+4. If correct, server sets httpOnly cookie `lr_session` with signed token
+5. All protected routes (`/api/leads/*`, `/api/exports/*`) validate the cookie
+
+### Security Properties
+
+- **httpOnly cookie**: JavaScript cannot read the session token
+- **Secure flag**: Cookie only sent over HTTPS in production
+- **SameSite=Strict**: Prevents CSRF attacks
+- **HMAC-SHA256 signature**: Token cannot be forged without SESSION_SECRET
+- **Server-side TTL check**: Expired tokens are rejected
+
+### API Endpoints
+
+#### POST /api/auth/login
+- Request: `{ "passcode": "string" }`
+- 200 OK: `{ "ok": true }` + sets `lr_session` cookie
+- 401 Unauthorized: `{ "ok": false, "error": "Invalid passcode" }`
+
+#### GET /api/auth/me
+- No body required (reads cookie)
+- 200 OK: `{ "ok": true }` (session valid)
+- 401 Unauthorized: `{ "ok": false, "error": "Not authenticated" }`
+
+### Protected Routes
+
+All of these require valid session:
+- `POST /api/leads/generate`
+- `POST /api/leads/status`
+- `GET /api/exports/list`
+- `POST /api/exports/signed-url`
+
+---
+
+## Export History (Postgres)
+
+### Overview
+
+Export metadata is persisted in Supabase Postgres for tracking and re-downloading old exports. **Only metadata is stored—no PII.**
+
+### Database Migration
+
+Run the migration in `supabase/migrations/001_lead_exports.sql`:
+
+```sql
+-- Run in Supabase SQL Editor or via supabase CLI
+-- Creates lead_exports table with RLS disabled (server-only access)
+```
+
+### Table Schema: `lead_exports`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | uuid | Primary key |
+| `created_at` | timestamptz | When export started |
+| `updated_at` | timestamptz | Last status update |
+| `provider` | text | `mock` or `audiencelab` |
+| `lead_request` | text | The query string |
+| `zip_codes` | text[] | Array of ZIP codes |
+| `target` | text | Target scope |
+| `use_case` | text | Quality preset |
+| `audience_id` | text | AudienceLab audience ID (if available) |
+| `request_id` | text | Internal request ID for logs |
+| `status` | text | `building`, `success`, `no_results`, `error` |
+| `error_code` | text | Error code if failed |
+| `error_message` | text | Error message if failed |
+| `total_fetched` | integer | Raw contacts fetched |
+| `kept` | integer | Leads after filtering |
+| `diagnostics` | jsonb | Quality diagnostics |
+| `field_coverage` | jsonb | Field coverage stats |
+| `bucket` | text | Storage bucket name |
+| `path` | text | File path in bucket |
+| `last_signed_url_at` | timestamptz | Last time download link was generated |
+
+### API Endpoints
+
+#### GET /api/exports/list
+- Session required
+- Query params: `?limit=N` (default 25, max 100)
+- 200 OK: `{ "ok": true, "exports": [...], "total": N }`
+
+#### POST /api/exports/signed-url
+- Session required
+- Request: `{ "exportId": "uuid" }`
+- 200 OK: `{ "ok": true, "signedUrl": "...", "expiresIn": 3600 }`
+- 404: Export not found or no file
+- 400: Export not in success status
+
+### How Exports Are Tracked
+
+1. `POST /api/leads/generate` creates a row with `status=building`
+2. On success: updates with `status=success`, counts, diagnostics, file path
+3. On error: updates with `status=error`, error code/message
+4. For async (202): stores `audience_id` for later lookup
+5. `POST /api/leads/status` finds export by `audience_id` and updates on completion
+
+### Regenerating Download Links
+
+- Signed URLs expire (default 1 hour for regenerated links)
+- Users can click "Get Download Link" in Export History to regenerate
+- File must still exist in storage (not deleted)
+- Only `success` status exports have downloadable files

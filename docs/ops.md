@@ -138,6 +138,71 @@ Based on AudienceLab Fields Guide for high-quality lead data:
 - **Phone**: `SKIPTRACE_WIRELESS_NUMBERS` > `SKIPTRACE_LANDLINE_NUMBERS` > `mobile_phone` > `phone`
 - **DNC Filter**: Exclude contacts where `DNC` = "Y"
 
+## Field Mapping Sources
+
+AudienceLab returns data in various field locations. The mapping prioritizes **SKIPTRACE_*** (offline/verified) fields for outbound use cases.
+
+### Field Accessor
+
+The `getField()` function reads fields from multiple locations:
+1. Root level: `contact.FIELD_NAME`
+2. Nested `fields`: `contact.fields.FIELD_NAME`
+3. Nested `data`: `contact.data.FIELD_NAME`
+4. Nested `profile`: `contact.profile.FIELD_NAME`
+
+This handles various AudienceLab response shapes without code changes.
+
+### Name Mapping Priority
+
+1. `SKIPTRACE_NAME` (full name, parsed into first/last)
+2. `SKIPTRACE_FIRST_NAME` + `SKIPTRACE_LAST_NAME`
+3. `FIRST_NAME` + `LAST_NAME` (uppercase variants)
+4. `first_name` + `last_name` (lowercase variants)
+
+**Name Parsing:** If `SKIPTRACE_NAME` contains a full name like "John Michael Doe", it's split: last token → `last_name`, remainder → `first_name`.
+
+### Address Mapping Priority
+
+**B2C:**
+1. `SKIPTRACE_ADDRESS` / `SKIPTRACE_CITY` / `SKIPTRACE_STATE` / `SKIPTRACE_ZIP`
+2. `address` / `city` / `state` / `zip`
+3. `street_address` / `postal_code` (fallbacks)
+
+**B2B:**
+1. `SKIPTRACE_ADDRESS` (if available)
+2. `COMPANY_ADDRESS`
+3. `address` / `street_address`
+
+### Phone Mapping Priority
+
+**B2C:**
+1. `SKIPTRACE_WIRELESS_NUMBERS`
+2. `SKIPTRACE_LANDLINE_NUMBERS`
+3. `mobile_phone`
+4. `phone`
+
+**B2B:**
+1. `SKIPTRACE_B2B_WIRELESS` / `SKIPTRACE_B2B_WIRELESS_PHONE`
+2. `SKIPTRACE_B2B_LANDLINE` / `SKIPTRACE_B2B_LANDLINE_PHONE`
+3. `mobile_phone`
+4. `phone`
+
+**Phone Normalization:** Phone fields may contain comma/pipe-separated lists. The first valid 10-11 digit number is extracted and normalized to E.164 format (`+1XXXXXXXXXX`).
+
+### Troubleshooting: 0% Field Coverage
+
+**Symptom:** Field Coverage Diagnostics shows 0% for name/address/email despite phone coverage being high.
+
+**Likely Cause:** The AudienceLab audience/tier does not include skiptrace or offline fields for that query.
+
+**Resolution:**
+1. Check the raw response shape using the `requestId` in logs
+2. Verify the audience includes skiptrace fields in AudienceLab dashboard
+3. Consider using a different audience tier or match_by configuration
+4. Contact AudienceLab support if fields should be present but aren't
+
+**Note:** Some audience tiers only include phone numbers without identity data. This is expected for certain data sources.
+
 ## Recipe Engine
 
 The Recipe Engine applies preset-specific rules to maximize lead quality based on AudienceLab's documented field best practices.

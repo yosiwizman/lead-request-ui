@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mapAudienceLabContactToLead, lookupZipLocation, computeContactsCoverage, computeLeadsCoverage, buildRecipe, evaluateMatchByTier } from '../../../api/_lib/providers/audiencelab';
+import { mapAudienceLabContactToLead, lookupZipLocation, computeContactsCoverage, computeLeadsCoverage, buildRecipe, evaluateMatchByTier, getField, parseName, parsePhoneList } from '../../../api/_lib/providers/audiencelab';
 import type { GenerateInput, Lead } from '../../../api/_lib/types';
 
 describe('lookupZipLocation', () => {
@@ -33,7 +33,7 @@ describe('mapAudienceLabContactToLead', () => {
       first_name: 'John',
       last_name: 'Doe',
       email: 'john.doe@example.com',
-      phone: '305-555-1234',
+      phone: '3055551234', // US phone number
       address: '123 Main St',
       city: 'Miami',
       state: 'FL',
@@ -47,7 +47,7 @@ describe('mapAudienceLabContactToLead', () => {
     expect(result.lead!.first_name).toBe('John');
     expect(result.lead!.last_name).toBe('Doe');
     expect(result.lead!.email).toBe('john.doe@example.com');
-    expect(result.lead!.phone).toBe('305-555-1234');
+    expect(result.lead!.phone).toBe('+13055551234'); // Normalized to E.164
     expect(result.lead!.address).toBe('123 Main St');
     expect(result.lead!.city).toBe('Miami');
     expect(result.lead!.state).toBe('FL');
@@ -61,7 +61,7 @@ describe('mapAudienceLabContactToLead', () => {
     const contact = {
       first_name: 'Jane',
       last_name: 'Smith',
-      mobile_phone: '305-555-5678',
+      mobile_phone: '3055555678', // US phone via mobile_phone field
       street_address: '456 Oak Ave',
       postal_code: '33130',
     };
@@ -69,7 +69,7 @@ describe('mapAudienceLabContactToLead', () => {
     const result = mapAudienceLabContactToLead(contact, baseInput, 0);
 
     expect(result.lead).not.toBeNull();
-    expect(result.lead!.phone).toBe('305-555-5678');
+    expect(result.lead!.phone).toBe('+13055555678'); // Normalized to E.164
     expect(result.lead!.address).toBe('456 Oak Ave');
     expect(result.lead!.zip).toBe('33130');
   });
@@ -131,7 +131,7 @@ describe('mapAudienceLabContactToLead', () => {
   });
 
   it('includes leadRequest in tags', () => {
-    const contact = { first_name: 'Test', phone: '305-555-1234' };
+    const contact = { first_name: 'Test', phone: '3055551111' };
     const input: GenerateInput = {
       leadRequest: 'plumbing services miami',
       zips: ['33101'],
@@ -176,16 +176,16 @@ describe('mapAudienceLabContactToLead with useCase filtering', () => {
   });
 
   it('useCase=call: includes contacts with phone', () => {
-    const contact = { first_name: 'Test', phone: '************' };
+    const contact = { first_name: 'Test', phone: '3055551234' };
     const input: GenerateInput = { ...baseInput, useCase: 'call' };
     const result = mapAudienceLabContactToLead(contact, input, 0);
     
     expect(result.lead).not.toBeNull();
-    expect(result.lead!.phone).toBe('************');
+    expect(result.lead!.phone).toBe('+13055551234');
   });
 
   it('useCase=email: excludes contacts without email', () => {
-    const contact = { first_name: 'Test', phone: '************' };
+    const contact = { first_name: 'Test', phone: '3055551234' };
     const input: GenerateInput = { ...baseInput, useCase: 'email' };
     const result = mapAudienceLabContactToLead(contact, input, 0);
     
@@ -207,7 +207,7 @@ describe('mapAudienceLabContactToLead with useCase filtering', () => {
   });
 
   it('useCase=both: includes contacts with only phone', () => {
-    const contact = { first_name: 'Test', phone: '************' };
+    const contact = { first_name: 'Test', phone: '3055551234' };
     const input: GenerateInput = { ...baseInput, useCase: 'both' };
     const result = mapAudienceLabContactToLead(contact, input, 0);
     
@@ -223,7 +223,7 @@ describe('mapAudienceLabContactToLead with useCase filtering', () => {
   });
 
   it('tracks missingNameOrAddress flag', () => {
-    const contact = { phone: '************' }; // no name, no address
+    const contact = { phone: '3055551234' }; // no name, no address
     const result = mapAudienceLabContactToLead(contact, baseInput, 0);
     
     expect(result.lead).not.toBeNull();
@@ -231,7 +231,7 @@ describe('mapAudienceLabContactToLead with useCase filtering', () => {
   });
 
   it('missingNameOrAddress is false when name and address present', () => {
-    const contact = { first_name: 'Test', address: '123 Main St', phone: '************' };
+    const contact = { first_name: 'Test', address: '123 Main St', phone: '3055551234' };
     const result = mapAudienceLabContactToLead(contact, baseInput, 0);
     
     expect(result.lead).not.toBeNull();
@@ -668,5 +668,256 @@ describe('Recipe Engine: match_by tier in result', () => {
     
     expect(result.lead).toBeNull();
     expect(result.tier).toBe('high'); // Tier still computed
+  });
+});
+
+// =============================================================================
+// FIELD ACCESSOR & PARSING UTILITIES TESTS
+// =============================================================================
+
+describe('getField', () => {
+  it('reads field from root level', () => {
+    const contact = { first_name: 'John', email: 'john@example.com' };
+    expect(getField(contact, 'first_name')).toBe('John');
+    expect(getField(contact, 'email')).toBe('john@example.com');
+  });
+
+  it('reads field from nested fields object', () => {
+    const contact = { fields: { SKIPTRACE_NAME: 'Jane Doe' } };
+    expect(getField(contact, 'SKIPTRACE_NAME')).toBe('Jane Doe');
+  });
+
+  it('reads field from nested data object', () => {
+    const contact = { data: { phone: '3055551234' } };
+    expect(getField(contact, 'phone')).toBe('3055551234');
+  });
+
+  it('reads field from nested profile object', () => {
+    const contact = { profile: { address: '123 Main St' } };
+    expect(getField(contact, 'address')).toBe('123 Main St');
+  });
+
+  it('prefers root level over nested', () => {
+    const contact = { 
+      first_name: 'Root',
+      fields: { first_name: 'Nested' }
+    };
+    expect(getField(contact, 'first_name')).toBe('Root');
+  });
+
+  it('returns undefined for missing field', () => {
+    const contact = { first_name: 'Test' };
+    expect(getField(contact, 'NONEXISTENT')).toBeUndefined();
+  });
+
+  it('returns undefined for empty string', () => {
+    const contact = { first_name: '' };
+    expect(getField(contact, 'first_name')).toBeUndefined();
+  });
+
+  it('converts non-string values to string', () => {
+    const contact = { count: 42 };
+    expect(getField(contact, 'count')).toBe('42');
+  });
+});
+
+describe('parseName', () => {
+  it('parses full name into first and last', () => {
+    const result = parseName('John Doe');
+    expect(result.first_name).toBe('John');
+    expect(result.last_name).toBe('Doe');
+  });
+
+  it('handles middle names', () => {
+    const result = parseName('John Michael Doe');
+    expect(result.first_name).toBe('John Michael');
+    expect(result.last_name).toBe('Doe');
+  });
+
+  it('handles single name as first name', () => {
+    const result = parseName('John');
+    expect(result.first_name).toBe('John');
+    expect(result.last_name).toBe('');
+  });
+
+  it('returns empty for undefined', () => {
+    const result = parseName(undefined);
+    expect(result.first_name).toBe('');
+    expect(result.last_name).toBe('');
+  });
+
+  it('returns empty for empty string', () => {
+    const result = parseName('');
+    expect(result.first_name).toBe('');
+    expect(result.last_name).toBe('');
+  });
+
+  it('trims whitespace', () => {
+    const result = parseName('  John   Doe  ');
+    expect(result.first_name).toBe('John');
+    expect(result.last_name).toBe('Doe');
+  });
+});
+
+describe('parsePhoneList', () => {
+  it('normalizes 10-digit US phone to E.164', () => {
+    expect(parsePhoneList('3055551234')).toBe('+13055551234');
+  });
+
+  it('normalizes 11-digit US phone with leading 1', () => {
+    expect(parsePhoneList('13055551234')).toBe('+13055551234');
+  });
+
+  it('handles formatted phone number', () => {
+    expect(parsePhoneList('(305) 555-1234')).toBe('+13055551234');
+  });
+
+  it('handles comma-separated list and returns first valid', () => {
+    expect(parsePhoneList('3055551234,3055555678')).toBe('+13055551234');
+  });
+
+  it('handles pipe-separated list', () => {
+    expect(parsePhoneList('3055551234|3055555678')).toBe('+13055551234');
+  });
+
+  it('handles semicolon-separated list', () => {
+    expect(parsePhoneList('3055551234;3055555678')).toBe('+13055551234');
+  });
+
+  it('returns empty for undefined', () => {
+    expect(parsePhoneList(undefined)).toBe('');
+  });
+
+  it('returns empty for empty string', () => {
+    expect(parsePhoneList('')).toBe('');
+  });
+
+  it('passes through non-phone strings', () => {
+    // Strings that don't look like phones are returned as-is
+    expect(parsePhoneList('abc')).toBe('abc');
+  });
+});
+
+// =============================================================================
+// SKIPTRACE FIELD MAPPING TESTS
+// =============================================================================
+
+describe('SKIPTRACE field mapping', () => {
+  const baseInput: GenerateInput = {
+    leadRequest: 'roofing',
+    zips: ['33101'],
+    scope: 'residential',
+    useCase: 'both',
+  };
+
+  it('maps SKIPTRACE_NAME to first/last name', () => {
+    const contact = {
+      SKIPTRACE_NAME: 'John Michael Doe',
+      phone: '3055551234',
+    };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
+    
+    expect(result.lead).not.toBeNull();
+    expect(result.lead!.first_name).toBe('John Michael');
+    expect(result.lead!.last_name).toBe('Doe');
+  });
+
+  it('prefers SKIPTRACE_NAME over first_name/last_name', () => {
+    const contact = {
+      first_name: 'Online',
+      last_name: 'Name',
+      SKIPTRACE_NAME: 'Offline Name',
+      phone: '3055551234',
+    };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
+    
+    expect(result.lead!.first_name).toBe('Offline');
+    expect(result.lead!.last_name).toBe('Name');
+  });
+
+  it('falls back to first_name/last_name when SKIPTRACE_NAME missing', () => {
+    const contact = {
+      first_name: 'John',
+      last_name: 'Doe',
+      phone: '3055551234',
+    };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
+    
+    expect(result.lead!.first_name).toBe('John');
+    expect(result.lead!.last_name).toBe('Doe');
+  });
+
+  it('maps SKIPTRACE_ADDRESS/CITY/STATE/ZIP fields', () => {
+    const contact = {
+      SKIPTRACE_ADDRESS: '123 Skiptrace St',
+      SKIPTRACE_CITY: 'Skiptrace City',
+      SKIPTRACE_STATE: 'SC',
+      SKIPTRACE_ZIP: '12345',
+      address: '456 Online St',
+      city: 'Online City',
+      state: 'OC',
+      zip: '67890',
+      phone: '3055551234',
+    };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
+    
+    expect(result.lead!.address).toBe('123 Skiptrace St');
+    expect(result.lead!.city).toBe('Skiptrace City');
+    expect(result.lead!.state).toBe('SC');
+    expect(result.lead!.zip).toBe('12345');
+  });
+
+  it('falls back to online address fields when SKIPTRACE missing', () => {
+    const contact = {
+      address: '456 Online St',
+      city: 'Online City',
+      state: 'OC',
+      zip: '67890',
+      phone: '3055551234',
+    };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
+    
+    expect(result.lead!.address).toBe('456 Online St');
+    expect(result.lead!.city).toBe('Online City');
+    expect(result.lead!.state).toBe('OC');
+    expect(result.lead!.zip).toBe('67890');
+  });
+
+  it('maps SKIPTRACE_WIRELESS_NUMBERS for B2C', () => {
+    const contact = {
+      SKIPTRACE_WIRELESS_NUMBERS: '3055551234,3055555678',
+      phone: '9999999999',
+      first_name: 'Test',
+    };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
+    
+    expect(result.lead!.phone).toBe('+13055551234'); // First from list
+  });
+
+  it('maps SKIPTRACE_B2B_WIRELESS for B2B', () => {
+    const contact = {
+      SKIPTRACE_B2B_WIRELESS: '3055551234',
+      phone: '9999999999',
+      first_name: 'Test',
+    };
+    const commercialInput: GenerateInput = { ...baseInput, scope: 'commercial' };
+    const result = mapAudienceLabContactToLead(contact, commercialInput, 0);
+    
+    expect(result.lead!.phone).toBe('+13055551234');
+  });
+
+  it('reads fields from nested locations', () => {
+    const contact = {
+      fields: {
+        SKIPTRACE_NAME: 'Nested Name',
+        SKIPTRACE_WIRELESS_NUMBERS: '3055551234',
+      },
+    };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
+    
+    expect(result.lead).not.toBeNull();
+    expect(result.lead!.first_name).toBe('Nested');
+    expect(result.lead!.last_name).toBe('Name');
+    expect(result.lead!.phone).toBe('+13055551234');
   });
 });

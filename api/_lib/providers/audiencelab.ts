@@ -1,4 +1,4 @@
-import type { Lead, GenerateInput, ProviderResult, LeadScope, LeadQualityDiagnostics, UseCase, FieldCoverage, FieldCoverageBlock, CoverageFieldName } from '../types.js';
+import type { Lead, GenerateInput, ProviderResult, LeadScope, LeadQualityDiagnostics, UseCase, FieldCoverage, FieldCoverageBlock, CoverageFieldName, MatchByTier } from '../types.js';
 import {
   AudienceLabAuthError,
   AudienceLabUpstreamError,
@@ -51,17 +51,22 @@ interface AudienceLabContact {
   
   // B2B quality fields (AudienceLab Fields Guide)
   BUSINESS_EMAIL?: string;
-  BUSINESS_EMAIL_VALIDATION_STATUS?: string; // 'Valid' | 'Invalid' | etc.
+  BUSINESS_EMAIL_VALIDATION_STATUS?: string; // 'Valid' | 'Valid (Esp)' | 'Invalid' | etc.
   SKIPTRACE_B2B_WIRELESS?: string;
   SKIPTRACE_B2B_LANDLINE?: string;
+  SKIPTRACE_B2B_MATCH_BY?: string; // e.g., 'COMPANY_ADDRESS,EMAIL' - deterministic matching
   COMPANY_ADDRESS?: string;
   
   // B2C quality fields (AudienceLab Fields Guide)
   PERSONAL_EMAIL?: string;
-  PERSONAL_EMAIL_VALIDATION_STATUS?: string; // 'Valid' | 'Invalid' | etc.
+  PERSONAL_EMAIL_VALIDATION_STATUS?: string; // 'Valid' | 'Valid (Esp)' | 'Invalid' | etc.
   SKIPTRACE_WIRELESS_NUMBERS?: string;
   SKIPTRACE_LANDLINE_NUMBERS?: string;
+  SKIPTRACE_MATCH_BY?: string; // e.g., 'ADDRESS,EMAIL,NAME' - deterministic matching
   DNC?: string; // 'Y' | 'N' | undefined - Do Not Call
+  
+  // Freshness indicator
+  LAST_SEEN?: string; // ISO date string when contact was last active
 }
 
 interface AudienceLabMembersResponse {
@@ -70,6 +75,115 @@ interface AudienceLabMembersResponse {
   total?: number;
   page?: number;
   page_size?: number;
+}
+
+// =============================================================================
+// RECIPE ENGINE
+// Implements AudienceLab Fields Guide best practices for quality lead selection
+// =============================================================================
+
+/**
+ * Recipe configuration for lead quality filtering.
+ * Derived from leadScope + useCase combination.
+ */
+export interface RecipeConfig {
+  /** Require email to have 'Valid (Esp)' validation status */
+  requireEmailValidEsp: boolean;
+  /** Require phone to be present */
+  requirePhone: boolean;
+  /** Exclude contacts with DNC=Y (B2C calling) */
+  excludeDnc: boolean;
+  /** Maximum days since LAST_SEEN for email use cases (0 = disabled) */
+  freshnessDays: number;
+  /** Use case type for logging/debugging */
+  useCase: UseCase;
+}
+
+/**
+ * Build recipe configuration based on scope and use case.
+ * Implements AudienceLab Fields Guide recommendations:
+ * - B2B Call: SKIPTRACE_B2B_WIRELESS/LANDLINE, prefer COMPANY_ADDRESS match
+ * - B2B Email: BUSINESS_EMAIL with Valid(Esp) status, LAST_SEEN within 30 days
+ * - B2C Call: SKIPTRACE_WIRELESS/LANDLINE, exclude DNC=Y, use SKIPTRACE_MATCH_BY
+ * - B2C Email: PERSONAL_EMAIL with Valid(Esp) status, LAST_SEEN within 30 days
+ */
+export function buildRecipe(scope: LeadScope, useCase: UseCase): RecipeConfig {
+  const isEmailUseCase = useCase === 'email';
+  const isCallUseCase = useCase === 'call';
+  const isB2C = scope === 'residential';
+  
+  return {
+    requireEmailValidEsp: isEmailUseCase,
+    requirePhone: isCallUseCase,
+    excludeDnc: isB2C && (isCallUseCase || useCase === 'both'),
+    freshnessDays: isEmailUseCase ? 30 : 0,
+    useCase,
+  };
+}
+
+/**
+ * Evaluate match-by tier for accuracy ranking.
+ * Based on AudienceLab SKIPTRACE_MATCH_BY documentation:
+ * - High: Contains ADDRESS + EMAIL (most deterministic)
+ * - Medium: Contains NAME + ADDRESS
+ * - Low: Any other combination
+ */
+export function evaluateMatchByTier(contact: AudienceLabContact, scope: LeadScope): MatchByTier {
+  const matchBy = scope === 'commercial' 
+    ? (contact.SKIPTRACE_B2B_MATCH_BY || '').toUpperCase()
+    : (contact.SKIPTRACE_MATCH_BY || '').toUpperCase();
+  
+  if (!matchBy) return 'low';
+  
+  const hasAddress = matchBy.includes('ADDRESS') || matchBy.includes('COMPANY_ADDRESS');
+  const hasEmail = matchBy.includes('EMAIL');
+  const hasName = matchBy.includes('NAME');
+  
+  // Highest accuracy: ADDRESS + EMAIL
+  if (hasAddress && hasEmail) return 'high';
+  
+  // Medium accuracy: NAME + ADDRESS
+  if (hasName && hasAddress) return 'medium';
+  
+  // Low accuracy: anything else
+  return 'low';
+}
+
+/**
+ * Check if email validation status is 'Valid (Esp)' - the highest quality.
+ * AudienceLab considers 'Valid (Esp)' as deliverable email addresses.
+ */
+function isEmailValidEsp(validationStatus: string | undefined): boolean {
+  if (!validationStatus) return false;
+  const normalized = validationStatus.toLowerCase().trim();
+  return normalized === 'valid (esp)' || normalized === 'valid(esp)';
+}
+
+/**
+ * Check if email validation status is at least 'Valid' (including 'Valid (Esp)').
+ */
+function isEmailAtLeastValid(validationStatus: string | undefined): boolean {
+  if (!validationStatus) return true; // No status = assume valid (legacy behavior)
+  const normalized = validationStatus.toLowerCase().trim();
+  return normalized.startsWith('valid');
+}
+
+/**
+ * Check if LAST_SEEN date is within freshness window.
+ * Returns true if no LAST_SEEN field or if within windowDays.
+ */
+function isWithinFreshnessWindow(lastSeen: string | undefined, windowDays: number): boolean {
+  if (!lastSeen || windowDays === 0) return true;
+  
+  try {
+    const lastSeenDate = new Date(lastSeen);
+    const now = new Date();
+    const diffMs = now.getTime() - lastSeenDate.getTime();
+    const diffDays = diffMs / (1000 * 60 * 60 * 24);
+    return diffDays <= windowDays;
+  } catch {
+    return true; // If date parsing fails, allow the contact
+  }
 }
 
 /**
@@ -81,26 +195,47 @@ export function lookupZipLocation(zip: string): { city: string; state: string } 
 }
 
 /**
+ * Email selection result with detailed validation info.
+ */
+interface EmailSelectionResult {
+  email: string;
+  isValid: boolean;
+  isValidEsp: boolean;
+  validationStatus: string | undefined;
+}
+
+/**
  * Select best email based on scope using AudienceLab Fields Guide.
  * B2B: Prefer BUSINESS_EMAIL with Valid status
  * B2C: Prefer PERSONAL_EMAIL with Valid status
+ * Now also returns isValidEsp for recipe engine.
  */
-function selectQualityEmail(contact: AudienceLabContact, scope: LeadScope): { email: string; isValid: boolean } {
+function selectQualityEmail(contact: AudienceLabContact, scope: LeadScope): EmailSelectionResult {
   if (scope === 'commercial') {
     // B2B: BUSINESS_EMAIL preferred
     if (contact.BUSINESS_EMAIL) {
-      const isValid = contact.BUSINESS_EMAIL_VALIDATION_STATUS?.toLowerCase() === 'valid';
-      return { email: contact.BUSINESS_EMAIL, isValid: isValid || contact.BUSINESS_EMAIL_VALIDATION_STATUS === undefined };
+      const status = contact.BUSINESS_EMAIL_VALIDATION_STATUS;
+      return { 
+        email: contact.BUSINESS_EMAIL, 
+        isValid: isEmailAtLeastValid(status),
+        isValidEsp: isEmailValidEsp(status),
+        validationStatus: status,
+      };
     }
   } else {
     // B2C: PERSONAL_EMAIL preferred
     if (contact.PERSONAL_EMAIL) {
-      const isValid = contact.PERSONAL_EMAIL_VALIDATION_STATUS?.toLowerCase() === 'valid';
-      return { email: contact.PERSONAL_EMAIL, isValid: isValid || contact.PERSONAL_EMAIL_VALIDATION_STATUS === undefined };
+      const status = contact.PERSONAL_EMAIL_VALIDATION_STATUS;
+      return { 
+        email: contact.PERSONAL_EMAIL, 
+        isValid: isEmailAtLeastValid(status),
+        isValidEsp: isEmailValidEsp(status),
+        validationStatus: status,
+      };
     }
   }
-  // Fallback to basic email field
-  return { email: contact.email || '', isValid: true };
+  // Fallback to basic email field (no validation status)
+  return { email: contact.email || '', isValid: true, isValidEsp: false, validationStatus: undefined };
 }
 
 /**
@@ -127,21 +262,24 @@ function selectQualityPhone(contact: AudienceLabContact, scope: LeadScope): stri
 }
 
 /**
- * Check if contact should be excluded due to DNC (Do Not Call).
- * Only applies to B2C (residential) scope.
+ * Extended exclusion reasons for recipe engine.
  */
-function isDncExcluded(contact: AudienceLabContact, scope: LeadScope): boolean {
-  if (scope === 'commercial') return false; // DNC typically for B2C
-  return contact.DNC?.toUpperCase() === 'Y';
-}
+type ExclusionReason = 
+  | 'dnc' 
+  | 'invalid_email' 
+  | 'invalid_email_esp' 
+  | 'email_too_old' 
+  | 'missing_phone' 
+  | 'missing_contact';
 
 /**
- * Quality filter result for diagnostics.
+ * Quality filter result for diagnostics with tier ranking.
  */
 interface QualityFilterResult {
   lead: Lead | null;
-  excluded: 'dnc' | 'invalid_email' | 'missing_phone' | 'missing_contact' | null;
+  excluded: ExclusionReason | null;
   missingNameOrAddress: boolean;
+  tier: MatchByTier;
 }
 
 /**
@@ -249,12 +387,12 @@ export function computeLeadsCoverage(leads: Lead[]): FieldCoverageBlock {
 }
 
 /**
- * Map an AudienceLab contact to our Lead format with quality filtering.
- * Uses AudienceLab Fields Guide for optimal field selection.
- * Applies useCase-based filtering:
- *   - 'call': require phone present
- *   - 'email': require valid email present
- *   - 'both': either phone or email
+ * Map an AudienceLab contact to our Lead format with recipe-based quality filtering.
+ * Uses AudienceLab Fields Guide + Recipe Engine for optimal field selection.
+ * Applies recipe-based filtering:
+ *   - 'call': require phone, exclude DNC for B2C, rank by match_by tier
+ *   - 'email': require Valid(Esp) email, check LAST_SEEN freshness
+ *   - 'both': either phone or email, best of both rules
  */
 export function mapAudienceLabContactToLead(
   contact: AudienceLabContact,
@@ -271,37 +409,51 @@ export function mapAudienceLabContactToLead(
     effectiveScope = input.scope;
   }
 
-  // Check DNC exclusion (B2C only)
-  if (isDncExcluded(contact, effectiveScope)) {
-    return { lead: null, excluded: 'dnc', missingNameOrAddress: false };
+  // Build recipe for this scope + useCase
+  const recipe = buildRecipe(effectiveScope, useCase);
+  
+  // Compute match-by accuracy tier (used for ranking, not hard-filtering)
+  const tier = evaluateMatchByTier(contact, effectiveScope);
+
+  // Check DNC exclusion (B2C call/both only per recipe)
+  if (recipe.excludeDnc && contact.DNC?.toUpperCase() === 'Y') {
+    return { lead: null, excluded: 'dnc', missingNameOrAddress: false, tier };
   }
 
-  // Select quality email
-  const { email, isValid: emailValid } = selectQualityEmail(contact, effectiveScope);
+  // Select quality email with enhanced validation info
+  const emailResult = selectQualityEmail(contact, effectiveScope);
+  const { email, isValid: emailValid, isValidEsp } = emailResult;
   
-  // For 'email' useCase: require valid email
-  if (useCase === 'email') {
-    if (!email || !emailValid) {
-      return { lead: null, excluded: 'invalid_email', missingNameOrAddress: false };
+  // For 'email' useCase: require Valid(Esp) email per recipe
+  if (recipe.requireEmailValidEsp) {
+    if (!email) {
+      return { lead: null, excluded: 'invalid_email', missingNameOrAddress: false, tier };
+    }
+    if (!isValidEsp) {
+      return { lead: null, excluded: 'invalid_email_esp', missingNameOrAddress: false, tier };
+    }
+    // Check LAST_SEEN freshness for email use case
+    if (!isWithinFreshnessWindow(contact.LAST_SEEN, recipe.freshnessDays)) {
+      return { lead: null, excluded: 'email_too_old', missingNameOrAddress: false, tier };
     }
   } else {
     // For 'call' and 'both': exclude contacts with explicitly invalid emails (but allow missing)
     if (email && !emailValid) {
-      return { lead: null, excluded: 'invalid_email', missingNameOrAddress: false };
+      return { lead: null, excluded: 'invalid_email', missingNameOrAddress: false, tier };
     }
   }
 
   // Select quality phone
   const phone = selectQualityPhone(contact, effectiveScope);
 
-  // For 'call' useCase: require phone present
-  if (useCase === 'call' && !phone) {
-    return { lead: null, excluded: 'missing_phone', missingNameOrAddress: false };
+  // For 'call' useCase: require phone present per recipe
+  if (recipe.requirePhone && !phone) {
+    return { lead: null, excluded: 'missing_phone', missingNameOrAddress: false, tier };
   }
 
   // For 'both' useCase: need at least phone or email
   if (useCase === 'both' && !phone && !email) {
-    return { lead: null, excluded: 'missing_contact', missingNameOrAddress: false };
+    return { lead: null, excluded: 'missing_contact', missingNameOrAddress: false, tier };
   }
 
   // Select address (B2B: prefer COMPANY_ADDRESS)
@@ -329,7 +481,7 @@ export function mapAudienceLabContactToLead(
     source: 'audiencelab',
   };
 
-  return { lead, excluded: null, missingNameOrAddress };
+  return { lead, excluded: null, missingNameOrAddress, tier };
 }
 
 /**
@@ -554,32 +706,54 @@ export async function generateLeads(
     // Compute field coverage for raw contacts BEFORE filtering
     const coverageFetched = computeContactsCoverage(allContacts, input.scope);
 
-    // Map contacts to leads with quality filtering (cap at 50)
+    // Map contacts to leads with recipe-based quality filtering
     const diagnostics: LeadQualityDiagnostics = {
       totalFetched: allContacts.length,
       kept: 0,
       filteredMissingPhone: 0,
       filteredInvalidEmail: 0,
+      filteredInvalidEmailEsp: 0,
+      filteredEmailTooOld: 0,
       filteredDnc: 0,
       missingNameOrAddressCount: 0,
+      matchByTier: { high: 0, medium: 0, low: 0 },
     };
     
-    const leads: Lead[] = [];
-    for (let i = 0; i < allContacts.length && leads.length < maxLeads; i++) {
+    // First pass: filter and collect leads with their tiers
+    const leadsWithTier: Array<{ lead: Lead; tier: MatchByTier; missingNameOrAddress: boolean }> = [];
+    for (let i = 0; i < allContacts.length; i++) {
       const result = mapAudienceLabContactToLead(allContacts[i], input, i);
       if (result.lead) {
-        leads.push(result.lead);
-        if (result.missingNameOrAddress) {
-          diagnostics.missingNameOrAddressCount++;
-        }
+        leadsWithTier.push({ 
+          lead: result.lead, 
+          tier: result.tier, 
+          missingNameOrAddress: result.missingNameOrAddress 
+        });
       } else {
         // Track exclusion reasons for diagnostics
         switch (result.excluded) {
           case 'invalid_email': diagnostics.filteredInvalidEmail++; break;
+          case 'invalid_email_esp': diagnostics.filteredInvalidEmailEsp++; break;
+          case 'email_too_old': diagnostics.filteredEmailTooOld++; break;
           case 'dnc': diagnostics.filteredDnc++; break;
           case 'missing_phone': diagnostics.filteredMissingPhone++; break;
           case 'missing_contact': diagnostics.filteredMissingPhone++; break; // Count as missing phone for backwards compat
         }
+      }
+    }
+    
+    // Sort by tier (high > medium > low) to keep best leads
+    const tierOrder: Record<MatchByTier, number> = { high: 0, medium: 1, low: 2 };
+    leadsWithTier.sort((a, b) => tierOrder[a.tier] - tierOrder[b.tier]);
+    
+    // Take top N leads and track tier counts
+    const leads: Lead[] = [];
+    for (let i = 0; i < leadsWithTier.length && leads.length < maxLeads; i++) {
+      const item = leadsWithTier[i];
+      leads.push(item.lead);
+      diagnostics.matchByTier[item.tier]++;
+      if (item.missingNameOrAddress) {
+        diagnostics.missingNameOrAddressCount++;
       }
     }
     diagnostics.kept = leads.length;
@@ -721,31 +895,53 @@ export async function fetchAudienceMembers(
     // Compute field coverage for raw contacts BEFORE filtering
     const coverageFetched = computeContactsCoverage(allContacts, input.scope);
 
-    // Apply quality filtering
+    // Apply recipe-based quality filtering
     const diagnostics: LeadQualityDiagnostics = {
       totalFetched: allContacts.length,
       kept: 0,
       filteredMissingPhone: 0,
       filteredInvalidEmail: 0,
+      filteredInvalidEmailEsp: 0,
+      filteredEmailTooOld: 0,
       filteredDnc: 0,
       missingNameOrAddressCount: 0,
+      matchByTier: { high: 0, medium: 0, low: 0 },
     };
     
-    const leads: Lead[] = [];
-    for (let i = 0; i < allContacts.length && leads.length < maxLeads; i++) {
+    // First pass: filter and collect leads with their tiers
+    const leadsWithTier: Array<{ lead: Lead; tier: MatchByTier; missingNameOrAddress: boolean }> = [];
+    for (let i = 0; i < allContacts.length; i++) {
       const result = mapAudienceLabContactToLead(allContacts[i], input, i);
       if (result.lead) {
-        leads.push(result.lead);
-        if (result.missingNameOrAddress) {
-          diagnostics.missingNameOrAddressCount++;
-        }
+        leadsWithTier.push({ 
+          lead: result.lead, 
+          tier: result.tier, 
+          missingNameOrAddress: result.missingNameOrAddress 
+        });
       } else {
         switch (result.excluded) {
           case 'invalid_email': diagnostics.filteredInvalidEmail++; break;
+          case 'invalid_email_esp': diagnostics.filteredInvalidEmailEsp++; break;
+          case 'email_too_old': diagnostics.filteredEmailTooOld++; break;
           case 'dnc': diagnostics.filteredDnc++; break;
           case 'missing_phone': diagnostics.filteredMissingPhone++; break;
           case 'missing_contact': diagnostics.filteredMissingPhone++; break;
         }
+      }
+    }
+    
+    // Sort by tier (high > medium > low) to keep best leads
+    const tierOrder: Record<MatchByTier, number> = { high: 0, medium: 1, low: 2 };
+    leadsWithTier.sort((a, b) => tierOrder[a.tier] - tierOrder[b.tier]);
+    
+    // Take top N leads and track tier counts
+    const leads: Lead[] = [];
+    for (let i = 0; i < leadsWithTier.length && leads.length < maxLeads; i++) {
+      const item = leadsWithTier[i];
+      leads.push(item.lead);
+      diagnostics.matchByTier[item.tier]++;
+      if (item.missingNameOrAddress) {
+        diagnostics.missingNameOrAddressCount++;
       }
     }
     diagnostics.kept = leads.length;

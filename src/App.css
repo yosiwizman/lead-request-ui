@@ -160,6 +160,56 @@
   border-bottom: none;
 }
 
+/* Preset helper text */
+.preset-helper {
+  margin: 0.25rem 0 0;
+  font-size: 0.75rem;
+  color: #666;
+  font-style: italic;
+}
+
+/* Match Accuracy Tier Summary */
+.match-tier-summary {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #eee;
+}
+
+.match-tier-summary h5 {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #555;
+}
+
+.tier-badges {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.tier-badge {
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.tier-high {
+  background: #d4edda;
+  color: #155724;
+}
+
+.tier-medium {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.tier-low {
+  background: #f8d7da;
+  color: #721c24;
+}
+
 /* Field Coverage Diagnostics */
 .field-coverage {
   margin-top: 1.25rem;

@@ -6,13 +6,22 @@ type UseCase = 'call' | 'email' | 'both'
 type AppStatus = 'idle' | 'loading' | 'building' | 'success' | 'error'
 type CoverageFieldName = 'first_name' | 'last_name' | 'address' | 'city' | 'state' | 'zip' | 'phone' | 'email'
 
+interface MatchByTierCounts {
+  high: number
+  medium: number
+  low: number
+}
+
 interface QualitySummary {
   totalFetched: number
   kept: number
   filteredMissingPhone: number
   filteredInvalidEmail: number
+  filteredInvalidEmailEsp: number
+  filteredEmailTooOld: number
   filteredDnc: number
   missingNameOrAddressCount: number
+  matchByTier: MatchByTierCounts
 }
 
 interface FieldCoverageBlock {
@@ -248,6 +257,11 @@ function App() {
               <option value="email">Email Leads (Validated email only)</option>
               <option value="both">Call + Email (Best available)</option>
             </select>
+            <p className="preset-helper">
+              {useCase === 'call' && 'Requires phone; excludes DNC for B2C; ranks by match accuracy.'}
+              {useCase === 'email' && 'Requires Valid(Esp) email + recent activity; ranks by match accuracy.'}
+              {useCase === 'both' && 'Keeps best phone or email; excludes DNC for B2C calls.'}
+            </p>
           </div>
 
           <div className="form-group">
@@ -309,6 +323,12 @@ function App() {
                     {qualitySummary.filteredInvalidEmail > 0 && (
                       <li>Filtered (invalid email): {qualitySummary.filteredInvalidEmail}</li>
                     )}
+                    {qualitySummary.filteredInvalidEmailEsp > 0 && (
+                      <li>Filtered (not Valid Esp): {qualitySummary.filteredInvalidEmailEsp}</li>
+                    )}
+                    {qualitySummary.filteredEmailTooOld > 0 && (
+                      <li>Filtered (stale email): {qualitySummary.filteredEmailTooOld}</li>
+                    )}
                     {qualitySummary.filteredDnc > 0 && (
                       <li>Filtered (DNC): {qualitySummary.filteredDnc}</li>
                     )}
@@ -316,6 +336,22 @@ function App() {
                       <li>Missing name/address: {qualitySummary.missingNameOrAddressCount}</li>
                     )}
                   </ul>
+                  {qualitySummary.matchByTier && (
+                    <div className="match-tier-summary">
+                      <h5>Match Accuracy</h5>
+                      <div className="tier-badges">
+                        <span className="tier-badge tier-high" title="Address + Email match">
+                          High: {qualitySummary.matchByTier.high}
+                        </span>
+                        <span className="tier-badge tier-medium" title="Name + Address match">
+                          Med: {qualitySummary.matchByTier.medium}
+                        </span>
+                        <span className="tier-badge tier-low" title="Other match methods">
+                          Low: {qualitySummary.matchByTier.low}
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
               

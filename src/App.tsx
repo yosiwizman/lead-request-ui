@@ -1,9 +1,14 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import './App.css'
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
 
 type Scope = 'Residential' | 'Commercial' | 'Both'
 type UseCase = 'call' | 'email' | 'both'
 type AppStatus = 'idle' | 'loading' | 'building' | 'success' | 'error'
+type AuthStatus = 'checking' | 'authenticated' | 'unauthenticated'
 type CoverageFieldName = 'first_name' | 'last_name' | 'address' | 'city' | 'state' | 'zip' | 'phone' | 'email'
 
 interface MatchByTierCounts {
@@ -44,10 +49,47 @@ interface BuildingDetails {
   requestId: string
 }
 
+interface ExportItem {
+  id: string
+  createdAt: string
+  provider: string
+  leadRequest: string
+  zipCodes: string[]
+  target: number
+  useCase: string | null
+  status: string
+  errorCode: string | null
+  errorMessage: string | null
+  totalFetched: number | null
+  kept: number | null
+  hasFile: boolean
+  lastSignedUrlAt: string | null
+}
+
 const MAX_POLL_DURATION_MS = 60000 // 60 seconds max polling
 const POLL_INTERVAL_MS = 2000 // Poll every 2 seconds
 
 function App() {
+  // ─────────────────────────────────────────────────────────────────────────
+  // Auth state
+  // ─────────────────────────────────────────────────────────────────────────
+  const [authStatus, setAuthStatus] = useState<AuthStatus>('checking')
+  const [passcode, setPasscode] = useState('')
+  const [loginError, setLoginError] = useState('')
+  const [loginLoading, setLoginLoading] = useState(false)
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Export history state
+  // ─────────────────────────────────────────────────────────────────────────
+  const [exports, setExports] = useState<ExportItem[]>([])
+  const [exportsLoading, setExportsLoading] = useState(false)
+  const [exportsError, setExportsError] = useState('')
+  const [showHistory, setShowHistory] = useState(false)
+  const [regeneratingIds, setRegeneratingIds] = useState<Set<string>>(new Set())
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Form state
+  // ─────────────────────────────────────────────────────────────────────────
   const [leadRequest, setLeadRequest] = useState('')
   const [zipCodes, setZipCodes] = useState('')
   const [scope, setScope] = useState<Scope>('Residential')
@@ -64,6 +106,111 @@ function App() {
   
   const pollStartRef = useRef<number>(0)
   const pollTimerRef = useRef<number | null>(null)
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Check auth status on mount
+  // ─────────────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const res = await fetch('/api/auth/me', { credentials: 'include' })
+        if (res.ok) {
+          setAuthStatus('authenticated')
+        } else {
+          setAuthStatus('unauthenticated')
+        }
+      } catch {
+        setAuthStatus('unauthenticated')
+      }
+    }
+    checkAuth()
+  }, [])
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Login handler
+  // ─────────────────────────────────────────────────────────────────────────
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setLoginLoading(true)
+    setLoginError('')
+
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ passcode }),
+      })
+
+      if (res.ok) {
+        setAuthStatus('authenticated')
+        setPasscode('')
+      } else {
+        const data = await res.json()
+        setLoginError(data.error || 'Invalid passcode')
+      }
+    } catch {
+      setLoginError('Network error. Please try again.')
+    } finally {
+      setLoginLoading(false)
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Load export history
+  // ─────────────────────────────────────────────────────────────────────────
+  const loadExports = async () => {
+    setExportsLoading(true)
+    setExportsError('')
+
+    try {
+      const res = await fetch('/api/exports/list', { credentials: 'include' })
+      const data = await res.json()
+
+      if (res.ok && data.ok) {
+        setExports(data.exports || [])
+      } else {
+        setExportsError(data.error || 'Failed to load exports')
+      }
+    } catch {
+      setExportsError('Network error loading exports')
+    } finally {
+      setExportsLoading(false)
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Regenerate signed URL for an export
+  // ─────────────────────────────────────────────────────────────────────────
+  const regenerateSignedUrl = async (exportId: string) => {
+    setRegeneratingIds(prev => new Set(prev).add(exportId))
+
+    try {
+      const res = await fetch('/api/exports/signed-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ exportId }),
+      })
+
+      const data = await res.json()
+
+      if (res.ok && data.ok && data.signedUrl) {
+        // Open in new tab
+        window.open(data.signedUrl, '_blank')
+      } else {
+        alert(data.error || 'Failed to generate download link')
+      }
+    } catch {
+      alert('Network error. Please try again.')
+    } finally {
+      setRegeneratingIds(prev => {
+        const next = new Set(prev)
+        next.delete(exportId)
+        return next
+      })
+    }
+  }
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current) {
@@ -216,10 +363,80 @@ function App() {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Format date for display
+  // ─────────────────────────────────────────────────────────────────────────
+  const formatDate = (iso: string) => {
+    const d = new Date(iso)
+    return d.toLocaleString()
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Render auth checking state
+  // ─────────────────────────────────────────────────────────────────────────
+  if (authStatus === 'checking') {
+    return (
+      <div className="app">
+        <div className="loading">Checking authentication...</div>
+      </div>
+    )
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Render login screen
+  // ─────────────────────────────────────────────────────────────────────────
+  if (authStatus === 'unauthenticated') {
+    return (
+      <div className="app">
+        <header className="header">
+          <h1>Lead Request</h1>
+        </header>
+        <main className="main">
+          <div className="login-container">
+            <h2>Enter Passcode</h2>
+            <form onSubmit={handleLogin}>
+              <div className="form-group">
+                <input
+                  type="password"
+                  placeholder="Passcode"
+                  value={passcode}
+                  onChange={(e) => setPasscode(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              {loginError && <div className="error">{loginError}</div>}
+              <button
+                type="submit"
+                className="btn-primary"
+                disabled={loginLoading || !passcode.trim()}
+              >
+                {loginLoading ? 'Logging in...' : 'Login'}
+              </button>
+            </form>
+          </div>
+        </main>
+      </div>
+    )
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Render authenticated app
+  // ─────────────────────────────────────────────────────────────────────────
   return (
     <div className="app">
       <header className="header">
         <h1>Lead Request</h1>
+        <button
+          className="btn-history"
+          onClick={() => {
+            setShowHistory(!showHistory)
+            if (!showHistory && exports.length === 0) {
+              loadExports()
+            }
+          }}
+        >
+          {showHistory ? 'Hide History' : 'Export History'}
+        </button>
       </header>
 
       <main className="main">
@@ -431,6 +648,65 @@ function App() {
             </div>
           )}
         </div>
+
+        {/* ────────────────────────────────────────────────────────────────── */}
+        {/* Export History Panel                                              */}
+        {/* ────────────────────────────────────────────────────────────────── */}
+        {showHistory && (
+          <div className="export-history">
+            <div className="export-history-header">
+              <h3>Export History</h3>
+              <button
+                className="btn-refresh"
+                onClick={loadExports}
+                disabled={exportsLoading}
+              >
+                {exportsLoading ? 'Loading...' : 'Refresh'}
+              </button>
+            </div>
+
+            {exportsError && <div className="error">{exportsError}</div>}
+
+            {!exportsLoading && exports.length === 0 && (
+              <p className="no-exports">No exports yet</p>
+            )}
+
+            {exports.length > 0 && (
+              <div className="export-list">
+                {exports.map((exp) => (
+                  <div key={exp.id} className={`export-item status-${exp.status}`}>
+                    <div className="export-item-header">
+                      <span className="export-date">{formatDate(exp.createdAt)}</span>
+                      <span className={`export-status status-${exp.status}`}>
+                        {exp.status}
+                      </span>
+                    </div>
+                    <div className="export-item-details">
+                      <div className="export-request">{exp.leadRequest}</div>
+                      <div className="export-meta">
+                        ZIPs: {exp.zipCodes.slice(0, 3).join(', ')}
+                        {exp.zipCodes.length > 3 && ` +${exp.zipCodes.length - 3} more`}
+                        {exp.kept !== null && ` • ${exp.kept} leads`}
+                      </div>
+                    </div>
+                    {exp.status === 'success' && exp.hasFile && (
+                      <button
+                        className="btn-download-small"
+                        onClick={() => regenerateSignedUrl(exp.id)}
+                        disabled={regeneratingIds.has(exp.id)}
+                      >
+                        {regeneratingIds.has(exp.id) ? 'Getting...' : 'Get Download Link'}
+                      </button>
+                    )}
+                    {exp.status === 'error' && exp.errorMessage && (
+                      <div className="export-error">{exp.errorMessage}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </main>
     </div>
   )

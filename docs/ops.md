@@ -694,3 +694,68 @@ Run the migration in `supabase/migrations/001_lead_exports.sql`:
 - Users can click "Get Download Link" in Export History to regenerate
 - File must still exist in storage (not deleted)
 - Only `success` status exports have downloadable files
+
+---
+
+## Go-Live Checklist
+
+Use this checklist when deploying auth + export history features to production.
+
+### 1. Vercel Environment Variables
+
+Set these in Vercel Dashboard → Project Settings → Environment Variables.
+Apply to **both Production and Preview** environments.
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `APP_PASSCODE` | Yes | Passcode for app access. 15+ chars recommended. |
+| `SESSION_SECRET` | Yes | Secret for token signing. 32+ chars, high entropy. |
+| `SESSION_TTL_SECONDS` | No | Session duration. Default: 604800 (7 days). |
+
+**Important:** After adding/changing env vars, trigger a new deployment:
+- Go to Deployments → latest → ... → Redeploy
+- Or push a commit to trigger CI
+
+### 2. Supabase Database Migration
+
+Run the migration to create the `lead_exports` table:
+
+**File:** `supabase/migrations/001_lead_exports.sql`
+
+**How to apply:**
+1. Open Supabase Dashboard → SQL Editor
+2. Copy the entire contents of the migration file
+3. Paste and click "Run"
+4. Verify table exists: `SELECT * FROM lead_exports LIMIT 1;`
+
+**What it creates:**
+- `lead_exports` table for export history metadata (no PII)
+- Indexes for efficient listing and lookup
+- Auto-update trigger for `updated_at` timestamp
+
+### 3. Verification Steps
+
+After both steps are complete:
+
+1. **Login works:** Visit prod → should show passcode prompt → enter passcode → main app loads
+2. **Generate works:** Generate leads → should succeed and show download link
+3. **Export History works:** Click "Export History" → should list recent exports
+4. **Link regeneration works:** Click "Get Download Link" on a past export → should open CSV
+
+### Troubleshooting: Go-Live Issues
+
+**Symptom: Login page but passcode doesn't work**
+- Cause: `APP_PASSCODE` not set or wrong value
+- Fix: Check Vercel env vars, redeploy
+
+**Symptom: Login works but generate fails with 500**
+- Cause: `SESSION_SECRET` not set
+- Fix: Set SESSION_SECRET (32+ chars), redeploy
+
+**Symptom: Export History shows empty or errors**
+- Cause: Migration not applied
+- Fix: Run `001_lead_exports.sql` in Supabase SQL Editor
+
+**Symptom: "Supabase not configured" errors in logs**
+- Cause: Missing `SUPABASE_URL` or `SUPABASE_SERVICE_ROLE_KEY`
+- Fix: These should already be set from initial setup; verify in Vercel env vars

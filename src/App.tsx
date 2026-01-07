@@ -1,5 +1,71 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, Component, type ReactNode } from 'react'
 import './App.css'
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Error Boundary - catches rendering errors and shows fallback UI
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface ErrorBoundaryState {
+  hasError: boolean
+  error: Error | null
+}
+
+class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryState> {
+  constructor(props: { children: ReactNode }) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error: Error, info: { componentStack: string }) {
+    console.error('React Error Boundary caught:', error, info.componentStack)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="app">
+          <header className="header">
+            <h1>Lead Request</h1>
+          </header>
+          <main className="main">
+            <div className="error-boundary">
+              <h2>Something went wrong</h2>
+              <p>An unexpected error occurred. Please try reloading the page.</p>
+              <p className="error-detail">{this.state.error?.message || 'Unknown error'}</p>
+              <button
+                className="btn-primary"
+                onClick={() => window.location.reload()}
+              >
+                Reload Page
+              </button>
+            </div>
+          </main>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: Extract error message from API response
+// Handles both string errors and { code, message } objects
+// ─────────────────────────────────────────────────────────────────────────────
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (!error) return fallback
+  if (typeof error === 'string') return error
+  if (typeof error === 'object' && error !== null) {
+    const obj = error as Record<string, unknown>
+    if (typeof obj.message === 'string') return obj.message
+    if (typeof obj.code === 'string') return obj.code
+  }
+  return fallback
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -147,7 +213,7 @@ function App() {
         setPasscode('')
       } else {
         const data = await res.json()
-        setLoginError(data.error || 'Invalid passcode')
+        setLoginError(getErrorMessage(data.error, 'Invalid passcode'))
       }
     } catch {
       setLoginError('Network error. Please try again.')
@@ -170,7 +236,7 @@ function App() {
       if (res.ok && data.ok) {
         setExports(data.exports || [])
       } else {
-        setExportsError(data.error || 'Failed to load exports')
+        setExportsError(getErrorMessage(data.error, 'Failed to load exports'))
       }
     } catch {
       setExportsError('Network error loading exports')
@@ -199,7 +265,7 @@ function App() {
         // Open in new tab
         window.open(data.signedUrl, '_blank')
       } else {
-        alert(data.error || 'Failed to generate download link')
+        alert(getErrorMessage(data.error, 'Failed to generate download link'))
       }
     } catch {
       alert('Network error. Please try again.')
@@ -712,4 +778,13 @@ function App() {
   )
 }
 
-export default App
+// Wrap App in ErrorBoundary for production resilience
+function AppWithErrorBoundary() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  )
+}
+
+export default AppWithErrorBoundary

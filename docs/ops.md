@@ -759,3 +759,18 @@ After both steps are complete:
 **Symptom: "Supabase not configured" errors in logs**
 - Cause: Missing `SUPABASE_URL` or `SUPABASE_SERVICE_ROLE_KEY`
 - Fix: These should already be set from initial setup; verify in Vercel env vars
+
+**Symptom: Blank white page after login (React Error #31)**
+- Cause: UI tries to render an error object directly as a React child
+- This is fixed in v1.1.0+ with the `getErrorMessage()` helper and ErrorBoundary
+- If you see this on older versions, update to latest main
+- Console will show: `Objects are not valid as a React child (object with keys {code, message})`
+
+**Symptom: Login returns 500 Internal Server Error**
+- Cause: `APP_PASSCODE` env var is missing or contains invisible characters (BOM)
+- Fix:
+  1. Go to Vercel → Environment Variables
+  2. Delete `APP_PASSCODE`
+  3. Re-add it by typing (not pasting) or paste from a plain text source
+  4. Redeploy
+- To verify, check Vercel function logs for error details

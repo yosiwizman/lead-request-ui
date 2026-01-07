@@ -76,8 +76,8 @@ export default async function handler(
   // ─────────────────────────────────────────────────────────────────────────
   // Session guard
   // ─────────────────────────────────────────────────────────────────────────
-  const sessionOk = await requireSession(req, res);
-  if (!sessionOk) return;
+  const sessionGuard = requireSession(req, res);
+  if (sessionGuard) return; // sessionGuard is truthy (response sent) when session invalid
 
   // ─────────────────────────────────────────────────────────────────────────
   // Method check

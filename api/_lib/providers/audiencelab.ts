@@ -33,9 +33,14 @@ const ZIP_LOOKUP: Record<string, { city: string; state: string }> = {
 /**
  * AudienceLab contact with Fields Guide quality fields.
  * See: AudienceLab Fields Guide for B2B/B2C best practices.
+ * 
+ * Note: AudienceLab may return fields in various locations:
+ * - Root level: contact.FIELD_NAME
+ * - Nested: contact.fields.FIELD_NAME, contact.data.FIELD_NAME, contact.profile.FIELD_NAME
+ * Use getField() accessor to read fields robustly.
  */
 interface AudienceLabContact {
-  // Basic fields
+  // Basic fields (online/profile data)
   first_name?: string;
   last_name?: string;
   email?: string;
@@ -53,7 +58,9 @@ interface AudienceLabContact {
   BUSINESS_EMAIL?: string;
   BUSINESS_EMAIL_VALIDATION_STATUS?: string; // 'Valid' | 'Valid (Esp)' | 'Invalid' | etc.
   SKIPTRACE_B2B_WIRELESS?: string;
+  SKIPTRACE_B2B_WIRELESS_PHONE?: string; // Alternative field name
   SKIPTRACE_B2B_LANDLINE?: string;
+  SKIPTRACE_B2B_LANDLINE_PHONE?: string; // Alternative field name
   SKIPTRACE_B2B_MATCH_BY?: string; // e.g., 'COMPANY_ADDRESS,EMAIL' - deterministic matching
   COMPANY_ADDRESS?: string;
   
@@ -65,8 +72,123 @@ interface AudienceLabContact {
   SKIPTRACE_MATCH_BY?: string; // e.g., 'ADDRESS,EMAIL,NAME' - deterministic matching
   DNC?: string; // 'Y' | 'N' | undefined - Do Not Call
   
+  // Skiptrace/offline identity fields (higher priority for outbound)
+  SKIPTRACE_NAME?: string; // Full name from skiptrace (e.g., 'John Smith')
+  SKIPTRACE_FIRST_NAME?: string;
+  SKIPTRACE_LAST_NAME?: string;
+  SKIPTRACE_ADDRESS?: string; // Verified mailing address
+  SKIPTRACE_CITY?: string;
+  SKIPTRACE_STATE?: string;
+  SKIPTRACE_ZIP?: string;
+  
+  // Alternative field names (case variations)
+  FIRST_NAME?: string;
+  LAST_NAME?: string;
+  
   // Freshness indicator
   LAST_SEEN?: string; // ISO date string when contact was last active
+  
+  // Nested containers (AudienceLab may nest fields here)
+  fields?: Record<string, unknown>;
+  data?: Record<string, unknown>;
+  profile?: Record<string, unknown>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any; // Allow arbitrary field access
+}
+
+// =============================================================================
+// FIELD ACCESSOR & PARSING UTILITIES
+// Robust extraction of fields from various AudienceLab response shapes
+// =============================================================================
+
+/**
+ * Defensive field accessor that checks multiple locations for a field value.
+ * AudienceLab responses may have fields at root level or nested in fields/data/profile.
+ * 
+ * @param contact - The contact object to read from
+ * @param fieldName - The field name to look up (case-sensitive)
+ * @returns The field value as string, or undefined if not found
+ */
+export function getField(contact: AudienceLabContact, fieldName: string): string | undefined {
+  // Check root level first
+  const rootValue = contact[fieldName];
+  if (rootValue !== undefined && rootValue !== null && rootValue !== '') {
+    return String(rootValue);
+  }
+  
+  // Check nested containers
+  const containers = [contact.fields, contact.data, contact.profile];
+  for (const container of containers) {
+    if (container && typeof container === 'object') {
+      const nestedValue = container[fieldName];
+      if (nestedValue !== undefined && nestedValue !== null && nestedValue !== '') {
+        return String(nestedValue);
+      }
+    }
+  }
+  
+  return undefined;
+}
+
+/**
+ * Parse a full name (e.g., 'John Smith') into first and last name.
+ * Strategy: Last token is last_name, everything before is first_name.
+ * 
+ * @param fullName - Full name string to parse
+ * @returns Object with first_name and last_name
+ */
+export function parseName(fullName: string | undefined): { first_name: string; last_name: string } {
+  if (!fullName || !fullName.trim()) {
+    return { first_name: '', last_name: '' };
+  }
+  
+  const parts = fullName.trim().split(/\s+/);
+  if (parts.length === 1) {
+    // Single name - treat as first name
+    return { first_name: parts[0], last_name: '' };
+  }
+  
+  // Last token = last_name, rest = first_name
+  const last_name = parts[parts.length - 1];
+  const first_name = parts.slice(0, -1).join(' ');
+  return { first_name, last_name };
+}
+
+/**
+ * Parse a phone list (comma/pipe/semicolon separated) and return the first valid phone.
+ * Applies basic normalization (digits only, +1 prefix for US numbers).
+ * 
+ * @param phoneList - Comma/pipe/semicolon separated phone numbers
+ * @returns First valid phone number, or empty string
+ */
+export function parsePhoneList(phoneList: string | undefined): string {
+  if (!phoneList || !phoneList.trim()) {
+    return '';
+  }
+  
+  // Split on common delimiters
+  const phones = phoneList.split(/[,|;]+/).map(p => p.trim()).filter(Boolean);
+  
+  for (const phone of phones) {
+    // Extract digits only
+    const digits = phone.replace(/\D/g, '');
+    
+    // Basic validation: US phone should have 10-11 digits
+    if (digits.length === 10) {
+      // Add +1 prefix for US
+      return `+1${digits}`;
+    }
+    if (digits.length === 11 && digits.startsWith('1')) {
+      return `+${digits}`;
+    }
+    if (digits.length >= 10) {
+      // International or other format - return as-is with + prefix
+      return digits.startsWith('1') ? `+${digits}` : `+1${digits}`;
+    }
+  }
+  
+  // Fallback: return first phone as-is if no valid format found
+  return phones[0] || '';
 }
 
 interface AudienceLabMembersResponse {
@@ -240,25 +362,32 @@ function selectQualityEmail(contact: AudienceLabContact, scope: LeadScope): Emai
 
 /**
  * Select best phone based on scope using AudienceLab Fields Guide.
- * B2B: SKIPTRACE_B2B_WIRELESS > SKIPTRACE_B2B_LANDLINE > mobile_phone > phone
+ * B2B: SKIPTRACE_B2B_WIRELESS[_PHONE] > SKIPTRACE_B2B_LANDLINE[_PHONE] > mobile_phone > phone
  * B2C: SKIPTRACE_WIRELESS_NUMBERS > SKIPTRACE_LANDLINE_NUMBERS > mobile_phone > phone
+ * 
+ * Phone fields may contain comma/pipe separated lists; we extract the first valid number.
  */
 function selectQualityPhone(contact: AudienceLabContact, scope: LeadScope): string {
+  let rawPhone: string | undefined;
+  
   if (scope === 'commercial') {
-    // B2B phone hierarchy
-    return contact.SKIPTRACE_B2B_WIRELESS 
-      || contact.SKIPTRACE_B2B_LANDLINE 
-      || contact.mobile_phone 
-      || contact.phone 
-      || '';
+    // B2B phone hierarchy (check alternative field names too)
+    rawPhone = getField(contact, 'SKIPTRACE_B2B_WIRELESS')
+      || getField(contact, 'SKIPTRACE_B2B_WIRELESS_PHONE')
+      || getField(contact, 'SKIPTRACE_B2B_LANDLINE')
+      || getField(contact, 'SKIPTRACE_B2B_LANDLINE_PHONE')
+      || getField(contact, 'mobile_phone')
+      || getField(contact, 'phone');
   } else {
     // B2C phone hierarchy
-    return contact.SKIPTRACE_WIRELESS_NUMBERS 
-      || contact.SKIPTRACE_LANDLINE_NUMBERS 
-      || contact.mobile_phone 
-      || contact.phone 
-      || '';
+    rawPhone = getField(contact, 'SKIPTRACE_WIRELESS_NUMBERS')
+      || getField(contact, 'SKIPTRACE_LANDLINE_NUMBERS')
+      || getField(contact, 'mobile_phone')
+      || getField(contact, 'phone');
   }
+  
+  // Parse phone list (handles comma/pipe separated values)
+  return parsePhoneList(rawPhone);
 }
 
 /**
@@ -305,6 +434,8 @@ function emptyFieldCoverageBlock(): FieldCoverageBlock {
 /**
  * Compute field coverage for raw AudienceLab contacts (before filtering).
  * Returns counts and percentages for each field. NO PII is logged or returned.
+ * 
+ * Checks ALL possible field sources including SKIPTRACE_* offline fields.
  */
 export function computeContactsCoverage(contacts: AudienceLabContact[], scope: LeadScope): FieldCoverageBlock {
   if (contacts.length === 0) {
@@ -316,29 +447,58 @@ export function computeContactsCoverage(contacts: AudienceLabContact[], scope: L
   };
 
   for (const contact of contacts) {
-    // Check each field for presence (non-empty string)
-    if (contact.first_name?.trim()) counts.first_name++;
-    if (contact.last_name?.trim()) counts.last_name++;
+    // Name: check SKIPTRACE_NAME (full name), SKIPTRACE_FIRST/LAST_NAME, and basic fields
+    const hasFirstName = !!(getField(contact, 'SKIPTRACE_FIRST_NAME')
+      || getField(contact, 'SKIPTRACE_NAME') // Full name can provide first name
+      || getField(contact, 'FIRST_NAME')
+      || getField(contact, 'first_name'));
+    if (hasFirstName) counts.first_name++;
     
-    // Address: check multiple possible fields
-    const hasAddress = !!(contact.address?.trim() || contact.street_address?.trim() || 
-      (scope === 'commercial' && contact.COMPANY_ADDRESS?.trim()));
+    const hasLastName = !!(getField(contact, 'SKIPTRACE_LAST_NAME')
+      || getField(contact, 'SKIPTRACE_NAME') // Full name can provide last name
+      || getField(contact, 'LAST_NAME')
+      || getField(contact, 'last_name'));
+    if (hasLastName) counts.last_name++;
+    
+    // Address: check SKIPTRACE_ADDRESS first, then online fields
+    const hasAddress = !!(getField(contact, 'SKIPTRACE_ADDRESS')
+      || getField(contact, 'address')
+      || getField(contact, 'street_address')
+      || (scope === 'commercial' && getField(contact, 'COMPANY_ADDRESS')));
     if (hasAddress) counts.address++;
     
-    if (contact.city?.trim()) counts.city++;
-    if (contact.state?.trim()) counts.state++;
-    if (contact.zip?.trim() || contact.postal_code?.trim()) counts.zip++;
+    // City: check SKIPTRACE_CITY first
+    const hasCity = !!(getField(contact, 'SKIPTRACE_CITY') || getField(contact, 'city'));
+    if (hasCity) counts.city++;
     
-    // Phone: check multiple possible fields based on scope
+    // State: check SKIPTRACE_STATE first
+    const hasState = !!(getField(contact, 'SKIPTRACE_STATE') || getField(contact, 'state'));
+    if (hasState) counts.state++;
+    
+    // ZIP: check SKIPTRACE_ZIP first
+    const hasZip = !!(getField(contact, 'SKIPTRACE_ZIP')
+      || getField(contact, 'zip')
+      || getField(contact, 'postal_code'));
+    if (hasZip) counts.zip++;
+    
+    // Phone: check all possible sources based on scope
     const hasPhone = scope === 'commercial'
-      ? !!(contact.SKIPTRACE_B2B_WIRELESS?.trim() || contact.SKIPTRACE_B2B_LANDLINE?.trim() || contact.mobile_phone?.trim() || contact.phone?.trim())
-      : !!(contact.SKIPTRACE_WIRELESS_NUMBERS?.trim() || contact.SKIPTRACE_LANDLINE_NUMBERS?.trim() || contact.mobile_phone?.trim() || contact.phone?.trim());
+      ? !!(getField(contact, 'SKIPTRACE_B2B_WIRELESS')
+          || getField(contact, 'SKIPTRACE_B2B_WIRELESS_PHONE')
+          || getField(contact, 'SKIPTRACE_B2B_LANDLINE')
+          || getField(contact, 'SKIPTRACE_B2B_LANDLINE_PHONE')
+          || getField(contact, 'mobile_phone')
+          || getField(contact, 'phone'))
+      : !!(getField(contact, 'SKIPTRACE_WIRELESS_NUMBERS')
+          || getField(contact, 'SKIPTRACE_LANDLINE_NUMBERS')
+          || getField(contact, 'mobile_phone')
+          || getField(contact, 'phone'));
     if (hasPhone) counts.phone++;
     
-    // Email: check multiple possible fields based on scope
+    // Email: check validated email fields based on scope
     const hasEmail = scope === 'commercial'
-      ? !!(contact.BUSINESS_EMAIL?.trim() || contact.email?.trim())
-      : !!(contact.PERSONAL_EMAIL?.trim() || contact.email?.trim());
+      ? !!(getField(contact, 'BUSINESS_EMAIL') || getField(contact, 'email'))
+      : !!(getField(contact, 'PERSONAL_EMAIL') || getField(contact, 'email'));
     if (hasEmail) counts.email++;
   }
 
@@ -456,24 +616,75 @@ export function mapAudienceLabContactToLead(
     return { lead: null, excluded: 'missing_contact', missingNameOrAddress: false, tier };
   }
 
-  // Select address (B2B: prefer COMPANY_ADDRESS)
-  let address = contact.address || contact.street_address || '';
-  if (effectiveScope === 'commercial' && contact.COMPANY_ADDRESS) {
-    address = contact.COMPANY_ADDRESS;
+  // ==========================================================================
+  // FIELD MAPPING: Use SKIPTRACE_* (offline) fields first, then online fallbacks
+  // ==========================================================================
+  
+  // Name: SKIPTRACE_NAME (full name) > SKIPTRACE_FIRST/LAST_NAME > FIRST_NAME/LAST_NAME > first_name/last_name
+  let first_name = '';
+  let last_name = '';
+  
+  const skiptraceFullName = getField(contact, 'SKIPTRACE_NAME');
+  if (skiptraceFullName) {
+    // Parse full name into first/last
+    const parsed = parseName(skiptraceFullName);
+    first_name = parsed.first_name;
+    last_name = parsed.last_name;
+  } else {
+    // Try individual SKIPTRACE fields, then uppercase variants, then lowercase
+    first_name = getField(contact, 'SKIPTRACE_FIRST_NAME')
+      || getField(contact, 'FIRST_NAME')
+      || getField(contact, 'first_name')
+      || '';
+    last_name = getField(contact, 'SKIPTRACE_LAST_NAME')
+      || getField(contact, 'LAST_NAME')
+      || getField(contact, 'last_name')
+      || '';
   }
+  
+  // Address: SKIPTRACE_ADDRESS > COMPANY_ADDRESS (B2B) > address > street_address
+  let address = '';
+  if (effectiveScope === 'commercial') {
+    address = getField(contact, 'SKIPTRACE_ADDRESS')
+      || getField(contact, 'COMPANY_ADDRESS')
+      || getField(contact, 'address')
+      || getField(contact, 'street_address')
+      || '';
+  } else {
+    address = getField(contact, 'SKIPTRACE_ADDRESS')
+      || getField(contact, 'address')
+      || getField(contact, 'street_address')
+      || '';
+  }
+  
+  // City: SKIPTRACE_CITY > city
+  const city = getField(contact, 'SKIPTRACE_CITY')
+    || getField(contact, 'city')
+    || '';
+  
+  // State: SKIPTRACE_STATE > state
+  const state = getField(contact, 'SKIPTRACE_STATE')
+    || getField(contact, 'state')
+    || '';
+  
+  // ZIP: SKIPTRACE_ZIP > zip > postal_code
+  const zip = getField(contact, 'SKIPTRACE_ZIP')
+    || getField(contact, 'zip')
+    || getField(contact, 'postal_code')
+    || '';
 
   // Check for missing name or address (for quality summary, not exclusion)
-  const hasName = !!(contact.first_name || contact.last_name);
+  const hasName = !!(first_name || last_name);
   const hasAddress = !!address;
   const missingNameOrAddress = !hasName || !hasAddress;
 
   const lead: Lead = {
-    first_name: contact.first_name || '',
-    last_name: contact.last_name || '',
+    first_name,
+    last_name,
     address,
-    city: contact.city || '',
-    state: contact.state || '',
-    zip: contact.zip || contact.postal_code || '',
+    city,
+    state,
+    zip,
     phone,
     email,
     lead_type: effectiveScope,

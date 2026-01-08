@@ -39,13 +39,6 @@ function logEvent(event: string, data: Record<string, unknown>): void {
 }
 
 /**
- * Sleep helper for polling backoff.
- */
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-/**
  * POST /api/leads/status
  * 
  * Poll for audience members after initial generate returned 202 building.

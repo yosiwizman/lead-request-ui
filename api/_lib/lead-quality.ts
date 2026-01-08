@@ -57,7 +57,7 @@ export function calculateQualityScoreBreakdown(
   lead: Lead,
   suppressionFlags: boolean = false
 ): QualityScoreBreakdown {
-  let base = 50;
+  const base = 50;
   let matchScoreBonus = 0;
   let phoneBonus = 0;
   let addressBonus = 0;

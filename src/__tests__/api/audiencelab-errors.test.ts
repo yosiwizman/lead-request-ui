@@ -241,8 +241,63 @@ describe('AudienceLab provider error handling', () => {
     }
   });
 
-  it('caps leads at 50', async () => {
+  it('caps leads at default 200 (configurable via requestedCount)', async () => {
     // Contacts need email/phone to pass quality filter
+    // Generate 350 contacts to test the 200 default cap (we fetch 1.5x to account for filtering)
+    // Page size is now 100, so we need multiple pages
+    const page1Contacts = Array.from({ length: 100 }, (_, i) => ({
+      first_name: `User${i}`,
+      last_name: `Test`,
+      email: `user${i}@example.com`,
+    }));
+    const page2Contacts = Array.from({ length: 100 }, (_, i) => ({
+      first_name: `User${100 + i}`,
+      last_name: `Test`,
+      email: `user${100 + i}@example.com`,
+    }));
+    const page3Contacts = Array.from({ length: 100 }, (_, i) => ({
+      first_name: `User${200 + i}`,
+      last_name: `Test`,
+      email: `user${200 + i}@example.com`,
+    }));
+    const page4Contacts = Array.from({ length: 50 }, (_, i) => ({
+      first_name: `User${300 + i}`,
+      last_name: `Test`,
+      email: `user${300 + i}@example.com`,
+    }));
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: 'audience-123' }),
+    });
+    // Mock multiple page fetches (page size is 100, we need ~300 to ensure 200 after filtering)
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ data: page1Contacts }),
+    });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ data: page2Contacts }),
+    });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ data: page3Contacts }),
+    });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ data: page4Contacts }), // Less than 100 = end of data
+    });
+
+    const result = await generateLeads(testInput);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Default cap is now 200
+      expect(result.leads).toHaveLength(200);
+    }
+  });
+
+  it('respects custom requestedCount', async () => {
     const manyContacts = Array.from({ length: 100 }, (_, i) => ({
       first_name: `User${i}`,
       last_name: `Test`,
@@ -258,7 +313,9 @@ describe('AudienceLab provider error handling', () => {
       json: async () => ({ data: manyContacts }),
     });
 
-    const result = await generateLeads(testInput);
+    // Request only 50 leads
+    const inputWith50 = { ...testInput, requestedCount: 50 };
+    const result = await generateLeads(inputWith50 as typeof testInput);
 
     expect(result.ok).toBe(true);
     if (result.ok) {

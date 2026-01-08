@@ -808,13 +808,80 @@ export function mapAudienceLabContactToLead(
 }
 
 /**
- * Build audience creation payload with geographic hints from ZIP codes.
+ * Configuration constants for AudienceLab payload building
  */
-function buildAudiencePayload(input: GenerateInput): Record<string, unknown> {
-  // Try to extract city/state from first ZIP for better targeting
-  const locations: Array<{ city?: string; state?: string; zip?: string }> = [];
+const PAYLOAD_DEFAULTS = {
+  MIN_SIZE: 1,
+  MAX_SIZE: 1000,
+  DEFAULT_SIZE: 200,
+  MIN_MATCH_SCORE_CALL: 3,
+  MIN_MATCH_SCORE_EMAIL: 0, // Email doesn't require match score by default
+  AUDIENCE_NAME_MAX_LENGTH: 50,
+} as const;
+
+/**
+ * Map our scope ('residential'/'commercial') to AudienceLab's persona_type
+ */
+function mapScopeToPersonaType(scope: LeadScope): 'B2C' | 'B2B' {
+  return scope === 'commercial' ? 'B2B' : 'B2C';
+}
+
+/**
+ * Build contact filters based on use case (call vs email)
+ */
+function buildContactFilters(useCase: UseCase, minMatchScoreOverride?: number): Record<string, unknown> {
+  const filters: Record<string, unknown> = {};
   
-  for (const zip of input.zips.slice(0, 5)) { // Limit to first 5 zips
+  if (useCase === 'call') {
+    // For call use case:
+    // - Require skip trace wireless phone present
+    // - DNC must be empty (not on Do-Not-Call list)
+    // - Match score >= minMatchScore (default 3 for call)
+    const effectiveMinScore = minMatchScoreOverride ?? PAYLOAD_DEFAULTS.MIN_MATCH_SCORE_CALL;
+    filters.phone_required = true;
+    filters.skip_trace_phone_required = true;
+    filters.wireless_phone_required = true; // Prioritize mobile for calling
+    filters.dnc_status = 'clean'; // Not on Do-Not-Call list
+    filters.min_match_score = effectiveMinScore;
+  } else if (useCase === 'email') {
+    // For email use case:
+    // - Require valid email present
+    // - Email validation status should be valid
+    filters.email_required = true;
+    filters.email_validation_status = 'valid';
+    // Match score less critical for email, but can still apply if specified
+    if (minMatchScoreOverride !== undefined) {
+      filters.min_match_score = minMatchScoreOverride;
+    }
+  }
+  
+  return filters;
+}
+
+/**
+ * Build intent/keyword filters for audience targeting
+ */
+function buildIntentFilters(leadRequest: string): Record<string, unknown> {
+  return {
+    // Keywords for intent matching
+    keywords: leadRequest,
+    // Intent signals - target active/recent intent
+    intent_strength: ['high', 'medium'], // Filter for meaningful intent
+  };
+}
+
+/**
+ * Build geographic filters from ZIP codes
+ */
+function buildGeoFilters(zips: string[]): Record<string, unknown> {
+  // Build zip code filter with the full list
+  const geoFilters: Record<string, unknown> = {
+    zip_codes: zips,
+  };
+  
+  // Also extract city/state hints for better targeting (up to 10 zips for lookup)
+  const locations: Array<{ city?: string; state?: string; zip?: string }> = [];
+  for (const zip of zips.slice(0, 10)) {
     const location = lookupZipLocation(zip);
     if (location) {
       locations.push({ city: location.city, state: location.state, zip });
@@ -822,17 +889,67 @@ function buildAudiencePayload(input: GenerateInput): Record<string, unknown> {
       locations.push({ zip });
     }
   }
+  
+  if (locations.length > 0) {
+    geoFilters.locations = locations;
+  }
+  
+  return geoFilters;
+}
 
-  return {
-    name: `Lead Request: ${input.leadRequest.slice(0, 50)}`,
+/**
+ * Build audience creation payload with full AudienceLab filtering.
+ * 
+ * This function builds a comprehensive payload including:
+ * - Intent/keyword targeting based on lead request
+ * - B2B/B2C persona type based on scope
+ * - Geographic targeting via ZIP codes
+ * - Contact quality filters (phone, email, DNC, match score)
+ * - Requested audience size
+ */
+export function buildAudiencePayload(input: GenerateInput): Record<string, unknown> {
+  // Determine requested size (default 200, max 1000)
+  const requestedCount = (input as { requestedCount?: number }).requestedCount;
+  const size = Math.max(
+    PAYLOAD_DEFAULTS.MIN_SIZE,
+    Math.min(requestedCount ?? PAYLOAD_DEFAULTS.DEFAULT_SIZE, PAYLOAD_DEFAULTS.MAX_SIZE)
+  );
+  
+  // Get useCase and minMatchScore from input
+  const useCase: UseCase = (input as { useCase?: UseCase }).useCase ?? 'call';
+  const minMatchScore = (input as { minMatchScore?: number }).minMatchScore;
+  
+  // Build structured filters
+  const intentFilters = buildIntentFilters(input.leadRequest);
+  const geoFilters = buildGeoFilters(input.zips);
+  const contactFilters = buildContactFilters(useCase, minMatchScore);
+  
+  // Build the full payload
+  const payload: Record<string, unknown> = {
+    // Audience metadata
+    name: `Lead Request: ${input.leadRequest.slice(0, PAYLOAD_DEFAULTS.AUDIENCE_NAME_MAX_LENGTH)}`,
     description: input.leadRequest,
+    
+    // Persona type (B2B for commercial, B2C for residential)
+    persona_type: mapScopeToPersonaType(input.scope),
+    
+    // Size - how many leads to target
+    size,
+    
+    // Filters object combines all filter types
     filters: {
-      keywords: input.leadRequest,
-      locations: locations.length > 0 ? locations : undefined,
-      zip_codes: input.zips,
+      // Intent targeting
+      ...intentFilters,
+      
+      // Geographic targeting
+      ...geoFilters,
+      
+      // Contact quality requirements
+      ...contactFilters,
     },
-    size: 50,
   };
+  
+  return payload;
 }
 
 export async function generateLeads(
@@ -937,13 +1054,17 @@ export async function generateLeads(
 
     const audienceId = extractResult.audienceId;
 
-    // Step 2: Fetch audience members (paginate up to 50 leads)
+    // Step 2: Fetch audience members with proper pagination
+    // Use requestedCount (default 200, max 1000) instead of hardcoded 50
+    const requestedCount = (input as { requestedCount?: number }).requestedCount ?? PAYLOAD_DEFAULTS.DEFAULT_SIZE;
+    const maxLeads = Math.min(requestedCount, PAYLOAD_DEFAULTS.MAX_SIZE);
+    
     const allContacts: AudienceLabContact[] = [];
     let page = 1;
-    const pageSize = 50;
-    const maxLeads = 50;
+    const pageSize = 100; // Fetch in larger batches for efficiency
+    const maxPages = Math.ceil(maxLeads / pageSize) + 5; // Safety margin for filtering
 
-    while (allContacts.length < maxLeads) {
+    while (allContacts.length < maxLeads * 1.5) { // Fetch extra to account for filtering
       const membersUrl = `${BASE_URL}/audiences/${audienceId}?page=${page}&page_size=${pageSize}`;
       
       const membersResponse = await fetch(membersUrl, {
@@ -990,20 +1111,20 @@ export async function generateLeads(
       const contacts = membersData.data || membersData.members || [];
 
       if (contacts.length === 0) {
-        break; // No more data
+        break; // No more data available
       }
 
       allContacts.push(...contacts);
       
-      // Check if we have enough or if there's no more data
+      // Check if we've exhausted available data
       if (contacts.length < pageSize) {
         break;
       }
       
       page++;
       
-      // Safety limit on pagination
-      if (page > 10) {
+      // Safety limit on pagination (based on requested size)
+      if (page > maxPages) {
         break;
       }
     }
@@ -1158,13 +1279,17 @@ export async function fetchAudienceMembers(
     'X-Api-Key': apiKey,
   };
 
+  // Use requestedCount (default 200, max 1000) for pagination
+  const requestedCount = (input as { requestedCount?: number }).requestedCount ?? PAYLOAD_DEFAULTS.DEFAULT_SIZE;
+  const maxLeads = Math.min(requestedCount, PAYLOAD_DEFAULTS.MAX_SIZE);
+  
   const allContacts: AudienceLabContact[] = [];
   let page = 1;
-  const pageSize = 50;
-  const maxLeads = 50;
+  const pageSize = 100; // Fetch in larger batches for efficiency
+  const maxPages = Math.ceil(maxLeads / pageSize) + 5; // Safety margin
 
   try {
-    while (allContacts.length < maxLeads) {
+    while (allContacts.length < maxLeads * 1.5) { // Fetch extra to account for filtering
       const membersUrl = `${BASE_URL}/audiences/${audienceId}?page=${page}&page_size=${pageSize}`;
       
       const membersResponse = await fetch(membersUrl, {
@@ -1211,7 +1336,7 @@ export async function fetchAudienceMembers(
       allContacts.push(...contacts);
       if (contacts.length < pageSize) break;
       page++;
-      if (page > 10) break;
+      if (page > maxPages) break;
     }
 
     // Still building if no contacts

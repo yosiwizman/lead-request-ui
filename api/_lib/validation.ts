@@ -96,6 +96,24 @@ export function validatePayload(body: Record<string, unknown>):
     };
   }
 
+  // Parse requestedCount (optional, default 200, max 1000)
+  const requestedCountRaw = body.requestedCount;
+  let requestedCount: number | undefined = undefined;
+  if (requestedCountRaw !== undefined && requestedCountRaw !== null && requestedCountRaw !== '') {
+    const num = typeof requestedCountRaw === 'number' ? requestedCountRaw : parseInt(String(requestedCountRaw), 10);
+    if (isNaN(num) || num < 1 || num > 1000) {
+      return {
+        ok: false,
+        error: {
+          code: 'invalid_requested_count',
+          message: 'requestedCount must be a number between 1 and 1000.',
+          details: { received: requestedCountRaw },
+        },
+      };
+    }
+    requestedCount = num;
+  }
+
   return {
     ok: true,
     data: { 
@@ -104,6 +122,7 @@ export function validatePayload(body: Record<string, unknown>):
       scope: leadScopeRaw as LeadScope, 
       useCase: useCaseRaw as UseCase,
       minMatchScore,
+      requestedCount,
     },
   };
 }

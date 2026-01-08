@@ -48,7 +48,9 @@ Generate leads from AudienceLab based on intent and targeting criteria.
   "requestId": "req-abc",
   "exportId": "uuid-...",
   "quality": { ... },
-  "fieldCoverage": { ... }
+  "fieldCoverage": { ... },
+  "suppressedCount": 5,
+  "suppressedStates": ["TX"]
 }
 ```
 
@@ -61,7 +63,71 @@ Generate leads from AudienceLab based on intent and targeting criteria.
     "message": "Audience is building. Poll /api/leads/status for results.",
     "details": {
       "audienceId": "aud-123",
+      "exportId": "uuid-...",
       "retryAfterSeconds": 2
+    }
+  }
+}
+```
+
+### POST /api/leads/status
+
+Poll for audience build completion with exponential backoff.
+
+**Request Body:**
+```json
+{
+  "audienceId": "aud-123",
+  "leadRequest": "roofing repair",
+  "zipCodes": "33101,33130",
+  "leadScope": "residential",
+  "useCase": "call",
+  "requestId": "req-abc",
+  "exportId": "uuid-..."
+}
+```
+
+**Response (Still Building - HTTP 202):**
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "provider_building",
+    "message": "Audience is still building. Continue polling.",
+    "details": {
+      "audienceId": "aud-123",
+      "exportId": "uuid-...",
+      "pollAttempts": 3,
+      "maxAttempts": 30,
+      "nextPollSeconds": 8
+    }
+  }
+}
+```
+
+**Response (Success - HTTP 200):**
+```json
+{
+  "ok": true,
+  "count": 150,
+  "signedUrl": "https://...",
+  "suppressedCount": 5,
+  "suppressedStates": ["TX"],
+  "pollAttempts": 5
+}
+```
+
+**Response (Timeout - HTTP 410):**
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "max_poll_attempts",
+    "message": "Audience build timed out after 30 poll attempts.",
+    "details": {
+      "audienceId": "aud-123",
+      "attempts": 30,
+      "maxAttempts": 30
     }
   }
 }
@@ -160,7 +226,11 @@ All requests include:
 
 ### Async/Building Status
 **Error:** `provider_building` (HTTP 202)
-**Action:** Poll `/api/leads/status` with the returned `audienceId`
+**Action:** Poll `/api/leads/status` with exponential backoff:
+1. Initial delay: 3 seconds
+2. Backoff sequence: 3, 5, 8, 13, 21, 34, 55, 60 (capped)
+3. Hard cap: 30 attempts (~25 minutes total)
+4. Use `nextPollSeconds` from response for timing
 
 ## Database Schema
 
@@ -176,6 +246,24 @@ ADD COLUMN IF NOT EXISTS requested_count INT;
 
 COMMENT ON COLUMN lead_exports.request_payload IS 'AudienceLab request payload (sanitized, no PII)';
 COMMENT ON COLUMN lead_exports.requested_count IS 'Number of leads originally requested';
+
+-- Migration 004_polling_compliance.sql
+ALTER TABLE lead_exports
+ADD COLUMN IF NOT EXISTS poll_attempts INT DEFAULT 0;
+
+ALTER TABLE lead_exports
+ADD COLUMN IF NOT EXISTS last_polled_at TIMESTAMPTZ;
+
+ALTER TABLE lead_exports
+ADD COLUMN IF NOT EXISTS suppressed_count INT DEFAULT 0;
+
+ALTER TABLE lead_exports
+ADD COLUMN IF NOT EXISTS suppressed_states TEXT[];
+
+COMMENT ON COLUMN lead_exports.poll_attempts IS 'Number of status poll attempts made';
+COMMENT ON COLUMN lead_exports.last_polled_at IS 'Timestamp of last poll attempt';
+COMMENT ON COLUMN lead_exports.suppressed_count IS 'Count of leads suppressed by compliance filters';
+COMMENT ON COLUMN lead_exports.suppressed_states IS 'States suppressed for compliance';
 ```
 
 ## Environment Variables
@@ -189,3 +277,37 @@ Required:
 Optional:
 - `AUDIENCELAB_BASE_URL`: Override AudienceLab API base URL (default: `https://api.audiencelab.io`)
 - `CRON_SECRET`: Secret for cron job authentication
+- `CALL_SUPPRESS_STATES`: Comma-separated states to suppress for CALL exports (default: `TX`). Set to `"none"` or `""` to disable.
+
+## Compliance: State Suppression
+
+For `useCase: "call"` exports, leads from certain states are automatically suppressed:
+
+### Default Behavior
+- Texas (TX) is suppressed by default due to strict telemarketing regulations
+- Suppression only applies to CALL useCase; email exports are not affected
+
+### Configuration
+```bash
+# Default: suppress Texas
+CALL_SUPPRESS_STATES=TX
+
+# Suppress multiple states
+CALL_SUPPRESS_STATES=TX,CA,NY
+
+# Disable suppression entirely
+CALL_SUPPRESS_STATES=none
+CALL_SUPPRESS_STATES=""
+```
+
+### Response Fields
+When suppression occurs, responses include:
+- `suppressedCount`: Number of leads removed
+- `suppressedStates`: Array of states that were suppressed (e.g., `["TX"]`)
+
+### Important Disclaimer
+**State suppression is a technical guardrail only.** Users remain responsible for compliance with all applicable telemarketing laws and regulations including:
+- Telephone Consumer Protection Act (TCPA)
+- State Do-Not-Call (DNC) lists
+- Time-of-day calling restrictions
+- Industry-specific regulations

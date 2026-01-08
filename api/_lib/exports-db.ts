@@ -34,6 +34,14 @@ export interface LeadExport {
   request_payload: Record<string, unknown> | null;
   /** Number of leads originally requested */
   requested_count: number | null;
+  /** Number of poll attempts for building status */
+  poll_attempts: number;
+  /** Last poll timestamp */
+  last_polled_at: string | null;
+  /** Number of leads suppressed by compliance filtering */
+  suppressed_count: number;
+  /** States that were suppressed */
+  suppressed_states: string[] | null;
 }
 
 /**
@@ -65,6 +73,10 @@ export interface UpdateExportSuccessInput {
   fieldCoverage: FieldCoverage | null;
   bucket: string;
   path: string;
+  /** Number of leads suppressed by compliance filtering */
+  suppressedCount?: number;
+  /** States that were suppressed */
+  suppressedStates?: string[];
 }
 
 /**
@@ -149,6 +161,8 @@ export async function updateExportSuccess(
         field_coverage: input.fieldCoverage,
         bucket: input.bucket,
         path: input.path,
+        suppressed_count: input.suppressedCount ?? 0,
+        suppressed_states: input.suppressedStates ?? null,
       })
       .eq('id', exportId);
 
@@ -360,5 +374,101 @@ export async function createSignedUrlForExport(
   } catch (err) {
     console.error('Export DB error (createSignedUrl):', err);
     return null;
+  }
+}
+
+/**
+ * Increment poll_attempts and update last_polled_at.
+ * Returns the new poll_attempts count, or null on error.
+ */
+export async function incrementPollAttempts(exportId: string): Promise<number | null> {
+  try {
+    const supabase = getSupabaseClient();
+    
+    // First get current value
+    const { data: current, error: fetchError } = await supabase
+      .from('lead_exports')
+      .select('poll_attempts')
+      .eq('id', exportId)
+      .single();
+    
+    if (fetchError) {
+      console.error('Failed to fetch poll_attempts:', fetchError.message);
+      return null;
+    }
+    
+    const newAttempts = (current?.poll_attempts ?? 0) + 1;
+    
+    const { error: updateError } = await supabase
+      .from('lead_exports')
+      .update({
+        poll_attempts: newAttempts,
+        last_polled_at: new Date().toISOString(),
+      })
+      .eq('id', exportId);
+    
+    if (updateError) {
+      console.error('Failed to increment poll_attempts:', updateError.message);
+      return null;
+    }
+    
+    return newAttempts;
+  } catch (err) {
+    console.error('Export DB error (incrementPollAttempts):', err);
+    return null;
+  }
+}
+
+/**
+ * Get current poll attempts for an export.
+ */
+export async function getPollAttempts(exportId: string): Promise<number> {
+  try {
+    const supabase = getSupabaseClient();
+    
+    const { data, error } = await supabase
+      .from('lead_exports')
+      .select('poll_attempts')
+      .eq('id', exportId)
+      .single();
+    
+    if (error) {
+      return 0;
+    }
+    
+    return data?.poll_attempts ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Update suppression stats on an export.
+ */
+export async function updateExportSuppression(
+  exportId: string,
+  suppressedCount: number,
+  suppressedStates: string[]
+): Promise<boolean> {
+  try {
+    const supabase = getSupabaseClient();
+    
+    const { error } = await supabase
+      .from('lead_exports')
+      .update({
+        suppressed_count: suppressedCount,
+        suppressed_states: suppressedStates,
+      })
+      .eq('id', exportId);
+    
+    if (error) {
+      console.error('Failed to update suppression:', error.message);
+      return false;
+    }
+    
+    return true;
+  } catch (err) {
+    console.error('Export DB error (updateSuppression):', err);
+    return false;
   }
 }

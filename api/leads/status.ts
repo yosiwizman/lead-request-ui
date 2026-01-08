@@ -21,7 +21,15 @@ import {
   findExportByAudienceId,
   updateExportSuccess,
   updateExportError,
+  incrementPollAttempts,
+  getExport,
 } from '../_lib/exports-db.js';
+import {
+  filterLeadsByStateCompliance,
+  calculateBackoffSeconds,
+  hasExceededMaxAttempts,
+  MAX_POLL_ATTEMPTS,
+} from '../_lib/compliance.js';
 
 /**
  * Structured log entry (safe for Vercel logs - no PII).
@@ -31,26 +39,23 @@ function logEvent(event: string, data: Record<string, unknown>): void {
 }
 
 /**
- * Sleep helper for polling backoff.
- */
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-/**
  * POST /api/leads/status
  * 
  * Poll for audience members after initial generate returned 202 building.
- * Implements short polling with backoff (2-3 attempts over ~3-6s max).
+ * Implements exponential backoff polling with compliance filtering.
  * 
  * Request body:
- *   { audienceId: string, leadRequest: string, zipCodes: string, leadScope: string, requestId?: string }
+ *   { audienceId: string, leadRequest: string, zipCodes: string, leadScope: string, useCase: string, requestId?: string, exportId?: string }
  * 
  * Responses:
- *   200: Success with signedUrl
- *   202: Still building, poll again
+ *   200: Success with signedUrl, count, suppressedCount
+ *   202: Still building, poll again (includes nextPollSeconds with exponential backoff)
  *   404: Definitively no results after max attempts
+ *   410: Max poll attempts exceeded (hard cap: 30)
  *   4xx/5xx: Various errors
+ * 
+ * Polling uses Fibonacci-based backoff: 3, 5, 8, 13, 21, 34, 55, 60s (capped)
+ * After 30 attempts, returns 410 Gone with actionable error.
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Require authentication (returns non-null if 401 sent)
@@ -105,16 +110,58 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Resolve export record (by exportId or audienceId)
   // ─────────────────────────────────────────────────────────────────────────
   let exportId: string | null = exportIdFromBody ?? null;
+  let currentPollAttempts = 0;
+  
   if (!exportId) {
     try {
       const found = await findExportByAudienceId(audienceId);
       exportId = found?.id ?? null;
+      currentPollAttempts = found?.poll_attempts ?? 0;
     } catch (err) {
       console.error('[status] Failed to find export by audienceId:', err);
     }
+  } else {
+    // Get current poll attempts from export record
+    try {
+      const exp = await getExport(exportId);
+      currentPollAttempts = exp?.poll_attempts ?? 0;
+    } catch {
+      // Ignore - will default to 0
+    }
   }
+  
   if (exportId) {
-    logEvent('status_export_found', { requestId, exportId });
+    logEvent('status_export_found', { requestId, exportId, currentPollAttempts });
+  }
+  
+  // ─────────────────────────────────────────────────────────────────────────
+  // Check if max poll attempts exceeded (hard cap)
+  // ─────────────────────────────────────────────────────────────────────────
+  if (hasExceededMaxAttempts(currentPollAttempts)) {
+    logEvent('status_max_attempts_exceeded', { requestId, exportId, attempts: currentPollAttempts });
+    
+    // Mark export as failed
+    if (exportId) {
+      updateExportError(exportId, {
+        status: 'error',
+        errorCode: 'max_poll_attempts',
+        errorMessage: `Audience build timed out after ${currentPollAttempts} poll attempts`,
+      }).catch(console.error);
+    }
+    
+    return res.status(410).json({
+      ok: false,
+      error: {
+        code: 'max_poll_attempts',
+        message: `Audience build timed out after ${MAX_POLL_ATTEMPTS} poll attempts. The audience may still be processing in AudienceLab. Try again later or create a new request.`,
+        details: {
+          audienceId,
+          exportId,
+          attempts: currentPollAttempts,
+          maxAttempts: MAX_POLL_ATTEMPTS,
+        },
+      },
+    });
   }
 
   // Validate provider configuration
@@ -140,19 +187,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     useCase,
   };
 
-  // Poll with backoff: up to 3 attempts, 2s apart (max ~6s total within Vercel limits)
-  const maxAttempts = 3;
-  const pollIntervalMs = 2000;
+  // Single poll attempt per request (client handles retry with backoff)
+  // This avoids Vercel function timeout issues
   let lastResult;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      lastResult = await fetchAudienceMembers(audienceId, input, originalRequestId || requestId);
+  // Increment poll attempts
+  if (exportId) {
+    const newAttempts = await incrementPollAttempts(exportId);
+    if (newAttempts !== null) {
+      currentPollAttempts = newAttempts;
+    }
+  }
+  
+  try {
+    lastResult = await fetchAudienceMembers(audienceId, input, originalRequestId || requestId);
 
-      if (lastResult.ok) {
-        // Success! Generate CSV and upload
-        const leads = lastResult.leads;
-        const csv = leadsToCsv(leads);
+    if (lastResult.ok) {
+      // Success! Apply compliance filtering, then generate CSV and upload
+      const complianceResult = filterLeadsByStateCompliance(lastResult.leads, useCase);
+      const leads = complianceResult.filteredLeads;
+      const csv = leadsToCsv(leads);
 
         const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
         const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -198,8 +252,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         logEvent('status_success', {
           requestId,
           audienceId,
-          attempt,
+          pollAttempts: currentPollAttempts,
           count: leads.length,
+          suppressedCount: complianceResult.suppressedCount,
           durationMs,
           diagnostics: lastResult.diagnostics,
           fieldCoverage: lastResult.fieldCoverage,
@@ -212,12 +267,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           try {
             await updateExportSuccess(exportId, {
               status: 'success',
-              totalFetched: lastResult.diagnostics?.totalFetched ?? leads.length,
+              totalFetched: lastResult.diagnostics?.totalFetched ?? (leads.length + complianceResult.suppressedCount),
               kept: leads.length,
               diagnostics: lastResult.diagnostics ?? null,
               fieldCoverage: lastResult.fieldCoverage ?? null,
               bucket,
               path,
+              suppressedCount: complianceResult.suppressedCount,
+              suppressedStates: complianceResult.suppressedStates,
             });
             logEvent('export_updated', { requestId, exportId, status: 'success' });
           } catch (dbErr) {
@@ -237,59 +294,54 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           exportId,
           quality: lastResult.diagnostics,
           fieldCoverage: lastResult.fieldCoverage,
+          // Compliance info
+          suppressedCount: complianceResult.suppressedCount,
+          suppressedStates: complianceResult.suppressedStates.length > 0 ? complianceResult.suppressedStates : undefined,
+          pollAttempts: currentPollAttempts,
         });
-      }
-
-      // Still building - check if we should retry
-      if (lastResult.error.code === 'provider_building' && attempt < maxAttempts) {
-        logEvent('status_building', { requestId, audienceId, attempt });
-        await sleep(pollIntervalMs);
-        continue;
-      }
-
-      // Last attempt or non-building error - return current state
-      break;
-
-    } catch (err) {
-      // Handle typed errors
-      if (err instanceof ProviderConfigError) {
-        logEvent('status_config_error', { requestId, provider: err.provider });
-        return jsonError(res, 500, err.code, err.message, { ...err.toSafeContext(), hint: err.hint });
-      }
-      if (err instanceof AudienceLabAuthError) {
-        logEvent('status_auth_error', { requestId, status: err.status });
-        return jsonError(res, 502, err.code, 'Unauthorized.', { ...err.toSafeContext(), hint: err.hint });
-      }
-      if (err instanceof AudienceLabUpstreamError) {
-        logEvent('status_upstream_error', { requestId, status: err.status });
-        return jsonError(res, 502, err.code, 'AudienceLab upstream error.', err.toSafeContext());
-      }
-      if (err instanceof AudienceLabContractError) {
-        logEvent('status_contract_error', { requestId, code: err.code });
-        return jsonError(res, 502, err.code, err.message, { ...err.toSafeContext(), hint: err.hint });
-      }
-      if (err instanceof AudienceLabAsyncError) {
-        logEvent('status_async_error', { requestId });
-        return jsonError(res, 502, err.code, 'AudienceLab async response.', { ...err.toSafeContext(), hint: err.hint });
-      }
-      if (err instanceof ConfigError) {
-        logEvent('status_config_error', { requestId, code: err.code });
-        return jsonError(res, 500, err.code, err.message, { ...err.toSafeContext(), hint: err.hint });
-      }
-
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      logEvent('status_unknown_error', { requestId, message });
-      return jsonError(res, 500, 'internal_error', message);
     }
+
+  } catch (err) {
+    // Handle typed errors
+    if (err instanceof ProviderConfigError) {
+      logEvent('status_config_error', { requestId, provider: err.provider });
+      return jsonError(res, 500, err.code, err.message, { ...err.toSafeContext(), hint: err.hint });
+    }
+    if (err instanceof AudienceLabAuthError) {
+      logEvent('status_auth_error', { requestId, status: err.status });
+      return jsonError(res, 502, err.code, 'Unauthorized.', { ...err.toSafeContext(), hint: err.hint });
+    }
+    if (err instanceof AudienceLabUpstreamError) {
+      logEvent('status_upstream_error', { requestId, status: err.status });
+      return jsonError(res, 502, err.code, 'AudienceLab upstream error.', err.toSafeContext());
+    }
+    if (err instanceof AudienceLabContractError) {
+      logEvent('status_contract_error', { requestId, code: err.code });
+      return jsonError(res, 502, err.code, err.message, { ...err.toSafeContext(), hint: err.hint });
+    }
+    if (err instanceof AudienceLabAsyncError) {
+      logEvent('status_async_error', { requestId });
+      return jsonError(res, 502, err.code, 'AudienceLab async response.', { ...err.toSafeContext(), hint: err.hint });
+    }
+    if (err instanceof ConfigError) {
+      logEvent('status_config_error', { requestId, code: err.code });
+      return jsonError(res, 500, err.code, err.message, { ...err.toSafeContext(), hint: err.hint });
+    }
+
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logEvent('status_unknown_error', { requestId, message });
+    return jsonError(res, 500, 'internal_error', message);
   }
 
-  // Return final state after all attempts
+  // Return final state
   if (lastResult && !lastResult.ok) {
     const err = lastResult.error;
 
-    // Still building after max attempts - return 202 to let client continue polling
+    // Still building - return 202 with backoff recommendation
     if (err.code === 'provider_building') {
-      logEvent('status_still_building', { requestId, audienceId, maxAttempts });
+      const nextPollSeconds = calculateBackoffSeconds(currentPollAttempts + 1);
+      logEvent('status_still_building', { requestId, audienceId, pollAttempts: currentPollAttempts, nextPollSeconds });
+      
       return res.status(202).json({
         ok: false,
         error: {
@@ -298,7 +350,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           details: {
             audienceId,
             requestId,
-            retryAfterSeconds: 2,
+            exportId,
+            pollAttempts: currentPollAttempts,
+            maxAttempts: MAX_POLL_ATTEMPTS,
+            nextPollSeconds,
           },
         },
       });

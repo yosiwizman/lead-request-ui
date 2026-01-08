@@ -122,6 +122,12 @@ interface BuildingDetails {
   leadScope: string
   useCase: UseCase
   requestId: string
+  exportId?: string
+}
+
+interface SuppressionInfo {
+  suppressedCount: number
+  suppressedStates: string[]
 }
 
 interface ExportItem {
@@ -141,8 +147,8 @@ interface ExportItem {
   lastSignedUrlAt: string | null
 }
 
-const MAX_POLL_DURATION_MS = 60000 // 60 seconds max polling
-const POLL_INTERVAL_MS = 2000 // Poll every 2 seconds
+const MAX_POLL_ATTEMPTS = 30 // Hard cap on poll attempts
+const DEFAULT_POLL_SECONDS = 3 // Default backoff if server doesn't specify
 
 function App() {
   // ─────────────────────────────────────────────────────────────────────────
@@ -180,9 +186,12 @@ function App() {
   const [fieldCoverageExpanded, setFieldCoverageExpanded] = useState(false)
   const [buildingDetails, setBuildingDetails] = useState<BuildingDetails | null>(null)
   const [pollElapsed, setPollElapsed] = useState(0)
+  const [pollAttempts, setPollAttempts] = useState(0)
+  const [nextPollSeconds, setNextPollSeconds] = useState(DEFAULT_POLL_SECONDS)
+  const [suppressionInfo, setSuppressionInfo] = useState<SuppressionInfo | null>(null)
   
   const pollStartRef = useRef<number>(0)
-  const pollTimerRef = useRef<number | null>(null)
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // ─────────────────────────────────────────────────────────────────────────
   // Check auth status on mount
@@ -291,22 +300,23 @@ function App() {
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current) {
-      clearInterval(pollTimerRef.current)
+      clearTimeout(pollTimerRef.current)
       pollTimerRef.current = null
     }
+  }, [])
+
+  // Use a ref to break the circular dependency between pollStatus and scheduleNextPoll
+  const pollStatusRef = useRef<(details: BuildingDetails) => Promise<void>>()
+
+  const scheduleNextPoll = useCallback((details: BuildingDetails, delaySeconds: number) => {
+    pollTimerRef.current = setTimeout(() => {
+      pollStatusRef.current?.(details)
+    }, delaySeconds * 1000)
   }, [])
 
   const pollStatus = useCallback(async (details: BuildingDetails) => {
     const elapsed = Date.now() - pollStartRef.current
     setPollElapsed(Math.floor(elapsed / 1000))
-
-    // Timeout after MAX_POLL_DURATION_MS
-    if (elapsed > MAX_POLL_DURATION_MS) {
-      stopPolling()
-      setErrorMessage(`Audience still building after ${MAX_POLL_DURATION_MS / 1000}s. Try again later. (ID: ${details.audienceId})`)
-      setStatus('error')
-      return
-    }
 
     try {
       const res = await fetch('/api/leads/status', {
@@ -319,6 +329,7 @@ function App() {
           leadScope: details.leadScope,
           useCase: details.useCase,
           requestId: details.requestId,
+          exportId: details.exportId,
         }),
       })
 
@@ -331,14 +342,47 @@ function App() {
         setSignedUrl(data.signedUrl || '')
         setQualitySummary(data.quality || null)
         setFieldCoverage(data.fieldCoverage || null)
+        // Set suppression info if present
+        if (data.suppressedCount > 0) {
+          setSuppressionInfo({
+            suppressedCount: data.suppressedCount,
+            suppressedStates: data.suppressedStates || [],
+          })
+        }
         setStatus('success')
         setBuildingDetails(null)
         return
       }
 
-      // Still building - continue polling
+      // Still building - continue polling with server-recommended backoff
       if (res.status === 202 && data.error?.code === 'provider_building') {
-        // Keep polling, state already set
+        const serverPollAttempts = data.error?.details?.pollAttempts ?? 0
+        const serverMaxAttempts = data.error?.details?.maxAttempts ?? MAX_POLL_ATTEMPTS
+        const serverNextPoll = data.error?.details?.nextPollSeconds ?? DEFAULT_POLL_SECONDS
+        
+        setPollAttempts(serverPollAttempts)
+        setNextPollSeconds(serverNextPoll)
+        
+        // Check if we've exceeded max attempts
+        if (serverPollAttempts >= serverMaxAttempts) {
+          stopPolling()
+          setErrorMessage(`Audience still building after ${serverPollAttempts} attempts. Try again later. (ID: ${details.audienceId})`)
+          setStatus('error')
+          setBuildingDetails(null)
+          return
+        }
+        
+        // Schedule next poll with exponential backoff from server
+        scheduleNextPoll(details, serverNextPoll)
+        return
+      }
+
+      // max_attempts_exceeded error from server
+      if (data.error?.code === 'max_attempts_exceeded') {
+        stopPolling()
+        setErrorMessage(`Max polling attempts exceeded. Audience may need more time. (ID: ${details.audienceId})`)
+        setStatus('error')
+        setBuildingDetails(null)
         return
       }
 
@@ -355,20 +399,22 @@ function App() {
       setStatus('error')
       setBuildingDetails(null)
     }
-  }, [stopPolling])
+  }, [stopPolling, scheduleNextPoll])
+
+  // Keep the ref up to date with the latest pollStatus
+  useEffect(() => {
+    pollStatusRef.current = pollStatus
+  }, [pollStatus])
 
   const startPolling = useCallback((details: BuildingDetails) => {
     setBuildingDetails(details)
     pollStartRef.current = Date.now()
     setPollElapsed(0)
+    setPollAttempts(0)
+    setNextPollSeconds(DEFAULT_POLL_SECONDS)
     setStatus('building')
 
-    // Start polling interval
-    pollTimerRef.current = window.setInterval(() => {
-      pollStatus(details)
-    }, POLL_INTERVAL_MS)
-
-    // Also poll immediately
+    // Poll immediately - subsequent polls will use server-recommended backoff
     pollStatus(details)
   }, [pollStatus])
 
@@ -390,6 +436,9 @@ function App() {
     setFieldCoverage(null)
     setFieldCoverageExpanded(false)
     setBuildingDetails(null)
+    setSuppressionInfo(null)
+    setPollAttempts(0)
+    setNextPollSeconds(DEFAULT_POLL_SECONDS)
 
     try {
       // Build request body - only include minMatchScore for call useCase if it differs from default
@@ -421,6 +470,7 @@ function App() {
           leadScope: data.error.details?.leadScope || scope.toLowerCase(),
           useCase: data.error.details?.useCase || useCase,
           requestId: data.error.details?.requestId || '',
+          exportId: data.error.details?.exportId,
         }
         startPolling(details)
         return
@@ -440,6 +490,13 @@ function App() {
       setSignedUrl(data.signedUrl || '')
       setQualitySummary(data.quality || null)
       setFieldCoverage(data.fieldCoverage || null)
+      // Set suppression info if present
+      if (data.suppressedCount > 0) {
+        setSuppressionInfo({
+          suppressedCount: data.suppressedCount,
+          suppressedStates: data.suppressedStates || [],
+        })
+      }
       setStatus('success')
     } catch {
       setErrorMessage('Failed to generate leads')
@@ -635,6 +692,9 @@ function App() {
             <div className="loading">
               <p>Building audience... ({pollElapsed}s)</p>
               <p style={{ fontSize: '0.875rem', color: '#666', marginTop: '0.5rem' }}>
+                Poll {pollAttempts}/{MAX_POLL_ATTEMPTS} • Next check in {nextPollSeconds}s
+              </p>
+              <p style={{ fontSize: '0.75rem', color: '#999', marginTop: '0.25rem' }}>
                 ID: {buildingDetails.audienceId.slice(0, 8)}...
               </p>
             </div>
@@ -643,6 +703,14 @@ function App() {
           {status === 'success' && signedUrl && (
             <div className="success">
               <p>Generated {leadCount} leads</p>
+              {suppressionInfo && suppressionInfo.suppressedCount > 0 && (
+                <p className="suppression-notice">
+                  {suppressionInfo.suppressedCount} lead{suppressionInfo.suppressedCount !== 1 ? 's' : ''} suppressed
+                  {suppressionInfo.suppressedStates.length > 0 && (
+                    <> (states: {suppressionInfo.suppressedStates.join(', ')})</>  
+                  )}
+                </p>
+              )}
               <a className="btn-download" href={signedUrl} target="_blank" rel="noopener noreferrer">
                 Download CSV
               </a>

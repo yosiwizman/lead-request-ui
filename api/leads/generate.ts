@@ -22,6 +22,7 @@ import {
   updateExportError,
   updateExportAudienceId,
 } from '../_lib/exports-db.js';
+import { filterLeadsByStateCompliance } from '../_lib/compliance.js';
 
 /**
  * Structured log entry (safe for Vercel logs - no PII).
@@ -230,7 +231,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return jsonError(res, status, err.code, err.message, err.details);
   }
 
-  const leads = result.leads;
+  // ─────────────────────────────────────────────────────────────────────────
+  // Apply compliance suppression for CALL exports
+  // ─────────────────────────────────────────────────────────────────────────
+  const complianceResult = filterLeadsByStateCompliance(result.leads, useCase);
+  const leads = complianceResult.filteredLeads;
+  
+  if (complianceResult.suppressedCount > 0) {
+    logEvent('generate_suppression', {
+      requestId,
+      originalCount: result.leads.length,
+      suppressedCount: complianceResult.suppressedCount,
+      suppressedStates: complianceResult.suppressedStates,
+      keptCount: leads.length,
+    });
+  }
+
   const csv = leadsToCsv(leads);
 
   const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
@@ -280,7 +296,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   logEvent('generate_success', { 
     requestId, 
     audienceId: result.audienceId,
-    count: leads.length, 
+    count: leads.length,
+    suppressedCount: complianceResult.suppressedCount,
     durationMs,
     diagnostics: result.diagnostics,
     fieldCoverage: result.fieldCoverage,
@@ -293,12 +310,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       await updateExportSuccess(exportId, {
         status: 'success',
-        totalFetched: result.diagnostics?.totalFetched ?? leads.length,
+        totalFetched: result.diagnostics?.totalFetched ?? (leads.length + complianceResult.suppressedCount),
         kept: leads.length,
         diagnostics: result.diagnostics ?? null,
         fieldCoverage: result.fieldCoverage ?? null,
         bucket,
         path,
+        suppressedCount: complianceResult.suppressedCount,
+        suppressedStates: complianceResult.suppressedStates,
       });
       logEvent('export_updated', { requestId, exportId, status: 'success' });
     } catch (dbErr) {
@@ -318,5 +337,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     exportId,
     quality: result.diagnostics,
     fieldCoverage: result.fieldCoverage,
+    // Compliance info
+    suppressedCount: complianceResult.suppressedCount,
+    suppressedStates: complianceResult.suppressedStates.length > 0 ? complianceResult.suppressedStates : undefined,
   });
 }

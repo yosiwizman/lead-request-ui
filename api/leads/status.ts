@@ -16,6 +16,7 @@ import {
 import { ConfigError } from '../_lib/bytestring.js';
 import { generateRequestId } from '../_lib/audiencelab-response.js';
 import { requireSession } from '../_lib/auth.js';
+import { checkRateLimit } from '../_lib/rate-limit.js';
 import {
   findExportByAudienceId,
   updateExportSuccess,
@@ -54,6 +55,10 @@ function sleep(ms: number): Promise<void> {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Require authentication (returns non-null if 401 sent)
   if (requireSession(req, res)) return;
+  
+  // Rate limiting (120/hour)
+  const rateLimited = await checkRateLimit(req, res, 'status');
+  if (rateLimited) return;
   
   const requestId = generateRequestId();
   const startTime = Date.now();

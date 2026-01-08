@@ -5,6 +5,7 @@
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { requireSession } from '../_lib/auth.js';
+import { checkRateLimit } from '../_lib/rate-limit.js';
 import { createSignedUrlForExport } from '../_lib/exports-db.js';
 
 /* -------------------------------------------------------------------------- */
@@ -47,6 +48,12 @@ export default async function handler(
   // ─────────────────────────────────────────────────────────────────────────
   const sessionGuard = requireSession(req, res);
   if (sessionGuard) return; // sessionGuard is truthy (response sent) when session invalid
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Rate limiting (60/hour)
+  // ─────────────────────────────────────────────────────────────────────────
+  const rateLimited = await checkRateLimit(req, res, 'signed-url');
+  if (rateLimited) return;
 
   // ─────────────────────────────────────────────────────────────────────────
   // Method check

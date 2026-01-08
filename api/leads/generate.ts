@@ -14,6 +14,7 @@ import {
 import { ConfigError } from '../_lib/bytestring.js';
 import { generateRequestId } from '../_lib/audiencelab-response.js';
 import { requireSession } from '../_lib/auth.js';
+import { checkRateLimit } from '../_lib/rate-limit.js';
 import {
   createExport,
   updateExportSuccess,
@@ -31,6 +32,10 @@ function logEvent(event: string, data: Record<string, unknown>): void {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Require authentication (returns non-null if 401 sent)
   if (requireSession(req, res)) return;
+  
+  // Rate limiting (20/hour)
+  const rateLimited = await checkRateLimit(req, res, 'generate');
+  if (rateLimited) return;
   
   const requestId = generateRequestId();
   const startTime = Date.now();

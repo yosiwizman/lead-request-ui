@@ -786,6 +786,232 @@ After both steps are complete:
 3. **Export History works:** Click "Export History" → should list recent exports
 4. **Link regeneration works:** Click "Get Download Link" on a past export → should open CSV
 
+---
+
+## Ops Hardening: Retention, Rate Limiting, Health Checks
+
+This section covers operational hardening features for production reliability.
+
+### Retention Policy
+
+**Overview:**
+Exports (database rows + storage files) are automatically cleaned up after a configurable retention period.
+
+**Configuration:**
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EXPORT_RETENTION_DAYS` | 30 | Days to retain exports before cleanup |
+| `CLEANUP_MAX_ROWS_PER_RUN` | 500 | Max rows to process per cleanup run |
+
+**Cleanup Behavior:**
+- Runs daily via Vercel Cron at 3:00 UTC
+- Deletes exports older than retention window
+- Also deletes orphaned records (missing bucket/path)
+- Storage files are deleted first, then database rows
+- Best-effort: continues on individual errors
+
+**Manual Trigger:**
+```bash
+# Dry run (preview what would be deleted)
+curl -H "x-cron-secret: YOUR_SECRET" "https://your-app.vercel.app/api/cron/cleanup?dryRun=1"
+
+# Actual cleanup
+curl -H "x-cron-secret: YOUR_SECRET" "https://your-app.vercel.app/api/cron/cleanup"
+
+# Custom retention
+curl -H "x-cron-secret: YOUR_SECRET" "https://your-app.vercel.app/api/cron/cleanup?retentionDays=7"
+```
+
+**Cleanup Response:**
+```json
+{
+  "ok": true,
+  "runId": "cleanup_abc123_xyz",
+  "dryRun": false,
+  "scanned": 25,
+  "deletedRows": 23,
+  "deletedFiles": 20,
+  "errorsCount": 2,
+  "retentionDays": 30,
+  "cutoffDate": "2026-01-01T00:00:00.000Z",
+  "rateLimitsDeleted": 150
+}
+```
+
+### Signed URL Regeneration
+
+**Why URLs Expire:**
+Signed URLs have a limited lifetime (24h for initial, 1h for regenerated) to limit exposure if a URL is shared or leaked.
+
+**Regenerating a Download Link:**
+1. Go to Export History in the UI
+2. Click "Get Download Link" on any successful export
+3. A new signed URL will be generated (valid for 1 hour)
+
+**API:**
+```bash
+POST /api/exports/signed-url
+{ "exportId": "uuid-here" }
+# Returns: { "ok": true, "signedUrl": "...", "expiresIn": 3600 }
+```
+
+**Note:** Files are deleted after retention period. Once deleted, URLs cannot be regenerated.
+
+### Rate Limiting
+
+**Overview:**
+Key endpoints have rate limits to prevent abuse and runaway costs.
+
+**Default Limits (per session, per hour):**
+| Endpoint | Limit | Purpose |
+|----------|-------|--------|
+| `POST /api/leads/generate` | 20/hour | Prevent excessive API calls |
+| `POST /api/leads/status` | 120/hour | Allow polling during build |
+| `POST /api/exports/signed-url` | 60/hour | Prevent URL farming |
+
+**Configuration Override (env vars):**
+```
+RATE_LIMIT_GENERATE=50
+RATE_WINDOW_GENERATE=1800
+RATE_LIMIT_STATUS=200
+RATE_LIMIT_SIGNED_URL=100
+```
+
+**Rate Limit Response (429):**
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "rate_limited",
+    "message": "Rate limit exceeded. Try again in 1800 seconds.",
+    "details": {
+      "limit": 20,
+      "remaining": 0,
+      "retryAfterSeconds": 1800,
+      "resetAt": "2026-01-01T04:00:00.000Z"
+    }
+  }
+}
+```
+
+**Rate Limit Headers:**
+Every response includes:
+- `X-RateLimit-Limit`: Max requests allowed
+- `X-RateLimit-Remaining`: Requests remaining in window
+- `X-RateLimit-Reset`: Unix timestamp when window resets
+- `Retry-After`: Seconds to wait (only on 429)
+
+**What to Do if Rate Limited:**
+1. Wait for the `retryAfterSeconds` period
+2. Check `X-RateLimit-Reset` header for exact reset time
+3. If consistently hitting limits, contact admin to adjust
+
+**Disabling for Tests:**
+Set `RATE_LIMIT_DISABLED=true` to bypass rate limiting.
+
+### Vercel Cron Setup
+
+**Configuration:**
+The `vercel.json` file defines cron jobs:
+```json
+{
+  "crons": [
+    {
+      "path": "/api/cron/cleanup",
+      "schedule": "0 3 * * *"
+    }
+  ]
+}
+```
+
+**Schedule:** Daily at 3:00 UTC (cron: `0 3 * * *`)
+
+**How Vercel Cron Works:**
+1. Vercel triggers a GET request to the path on schedule
+2. Request includes `Authorization: Bearer <CRON_SECRET>` header
+3. User-Agent is `vercel-cron/1.0`
+4. Only runs on production deployment (not previews)
+
+**Setting CRON_SECRET:**
+1. Generate a secure random string (32+ chars)
+2. Add to Vercel: Settings → Environment Variables → `CRON_SECRET`
+3. Mark as Sensitive, apply to Production only
+4. Redeploy
+
+**Rotating CRON_SECRET:**
+1. Generate new secret
+2. Update in Vercel env vars
+3. Redeploy
+4. Old secret immediately invalid
+
+**Monitoring Cron Runs:**
+1. Vercel Dashboard → Deployments → Logs
+2. Filter by `/api/cron/cleanup`
+3. Check `cleanup_complete` events for success
+
+### Health Check Endpoints
+
+**App Health:** `GET /api/health/app`
+- No auth required (public)
+- Returns 200 if serverless function is running
+- Response:
+```json
+{
+  "ok": true,
+  "time": "2026-01-01T12:00:00.000Z",
+  "version": "abc1234",
+  "env": "production"
+}
+```
+
+**Dependency Health:** `GET /api/health/deps`
+- No auth required (public)
+- Tests Supabase connectivity
+- Returns 200 if healthy, 503 if unhealthy
+- Response:
+```json
+{
+  "ok": true,
+  "time": "2026-01-01T12:00:00.000Z",
+  "supabase": true,
+  "supabaseLatencyMs": 45
+}
+```
+
+**Unhealthy Response (503):**
+```json
+{
+  "ok": false,
+  "time": "2026-01-01T12:00:00.000Z",
+  "supabase": false,
+  "supabaseLatencyMs": 5000,
+  "error": "supabase: Connection timeout"
+}
+```
+
+**Usage in Monitoring:**
+- Configure uptime monitoring (e.g., Pingdom, UptimeRobot)
+- Point to `GET /api/health/app` for basic availability
+- Point to `GET /api/health/deps` for dependency checks
+- Alert on non-200 responses
+
+### Database Migration: Rate Limits Table
+
+**File:** `supabase/migrations/002_rate_limits.sql`
+
+**How to apply:**
+1. Open Supabase Dashboard → SQL Editor
+2. Copy the entire contents of the migration file
+3. Paste and click "Run"
+4. Verify: `SELECT * FROM rate_limits LIMIT 1;`
+
+**What it creates:**
+- `rate_limits` table for tracking API request counts
+- Indexes for efficient lookups
+- Cleanup function `cleanup_old_rate_limits()`
+
+---
+
 ### Troubleshooting: Go-Live Issues
 
 **Symptom: Login page but passcode doesn't work**

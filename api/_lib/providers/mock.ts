@@ -39,6 +39,7 @@ export function generateLeads(input: GenerateInput): ProviderResult {
     const leadType = input.scope === 'both' ? (rand() < 0.5 ? 'residential' : 'commercial') : input.scope;
     const zip = input.zips[Math.floor(rand() * input.zips.length)];
 
+    const phone = `(${Math.floor(rand() * 900) + 100}) ${Math.floor(rand() * 900) + 100}-${Math.floor(rand() * 9000) + 1000}`;
     leads.push({
       first_name: first,
       last_name: last,
@@ -46,11 +47,16 @@ export function generateLeads(input: GenerateInput): ProviderResult {
       city: pick(rand, CITIES),
       state: pick(rand, STATES),
       zip,
-      phone: `(${Math.floor(rand() * 900) + 100}) ${Math.floor(rand() * 900) + 100}-${Math.floor(rand() * 9000) + 1000}`,
+      phone,
       email: `${first.toLowerCase()}.${last.toLowerCase()}@example.com`,
       lead_type: leadType,
       tags: input.leadRequest,
       source: 'mock',
+      best_phone: phone,
+      phones_all: phone,
+      wireless_phones: phone,
+      landline_phones: '',
+      match_score: 3,
     });
   }
   return { ok: true, leads };

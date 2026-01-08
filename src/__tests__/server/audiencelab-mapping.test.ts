@@ -409,6 +409,11 @@ describe('computeLeadsCoverage', () => {
         lead_type: 'residential',
         tags: 'roofing',
         source: 'audiencelab',
+        best_phone: '555-1234',
+        phones_all: '555-1234',
+        wireless_phones: '555-1234',
+        landline_phones: '',
+        match_score: 3,
       },
       {
         first_name: '',
@@ -422,6 +427,11 @@ describe('computeLeadsCoverage', () => {
         lead_type: 'residential',
         tags: 'roofing',
         source: 'audiencelab',
+        best_phone: '555-5678',
+        phones_all: '555-5678',
+        wireless_phones: '555-5678',
+        landline_phones: '',
+        match_score: 3,
       },
     ];
 
@@ -449,6 +459,11 @@ describe('computeLeadsCoverage', () => {
         lead_type: 'residential',
         tags: 'test',
         source: 'audiencelab',
+        best_phone: 'SECRET_PHONE',
+        phones_all: 'SECRET_PHONE',
+        wireless_phones: 'SECRET_PHONE',
+        landline_phones: '',
+        match_score: 3,
       },
     ];
 

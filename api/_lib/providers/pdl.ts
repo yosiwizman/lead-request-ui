@@ -29,6 +29,7 @@ export function mapPDLPersonToLead(
     (person.personal_emails && person.personal_emails[0]) ||
     '';
 
+  const phone = person.mobile_phone || '';
   return {
     first_name: person.first_name || '',
     last_name: person.last_name || '',
@@ -36,11 +37,16 @@ export function mapPDLPersonToLead(
     city: person.location_locality || '',
     state: person.location_region || '',
     zip: person.location_postal_code || '',
-    phone: person.mobile_phone || '',
+    phone,
     email,
     lead_type: input.scope === 'both' ? 'residential' : input.scope,
     tags: input.leadRequest,
     source: 'pdl',
+    best_phone: phone,
+    phones_all: phone,
+    wireless_phones: phone,
+    landline_phones: '',
+    match_score: 0,
   };
 }
 

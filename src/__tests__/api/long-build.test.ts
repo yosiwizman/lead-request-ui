@@ -220,7 +220,7 @@ describe('UI status handling', () => {
 
   it('building_long should stop polling and show info banner', () => {
     // This documents the expected UI behavior
-    const status = 'building_long';
+    const status: string = 'building_long';
 
     const shouldStopPolling = status === 'building_long';
     const shouldShowError = status === 'error' || status === 'no_results';

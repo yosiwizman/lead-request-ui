@@ -54,6 +54,38 @@ export interface LeadExport {
   suppressed_states: string[] | null;
   /** When background processor should next check this export */
   next_poll_at: string | null;
+  /** Quality tier used for filtering (hot, balanced, scale) */
+  quality_tier: string | null;
+  /** Intent pack ID applied */
+  intent_pack: string | null;
+  // Quality Gate fields
+  /** Number of leads delivered after quality gate filtering */
+  delivered_count: number | null;
+  /** Number of leads rejected by quality gate */
+  rejected_by_quality_count: number | null;
+  /** Minimum quality score threshold used */
+  min_quality_score_used: number | null;
+  // Extended quality report fields
+  /** Average quality score across delivered leads */
+  avg_quality_score: number | null;
+  /** Maximum quality score in export */
+  max_quality_score: number | null;
+  /** 90th percentile quality score */
+  p90_quality_score: number | null;
+  /** Percentage of delivered leads with wireless phone */
+  pct_wireless: number | null;
+  /** Percentage of delivered leads with full address */
+  pct_with_address: number | null;
+  /** Distribution of match scores as JSON */
+  match_score_distribution: Record<string, number> | null;
+  /** Warning message if fewer leads delivered than requested */
+  quality_gate_warning: string | null;
+  /** Count of leads with quality_score >= 70 */
+  high_quality_count: number | null;
+  /** Count of leads with quality_score >= 50 and < 70 */
+  medium_quality_count: number | null;
+  /** Count of leads with quality_score < 50 */
+  low_quality_count: number | null;
 }
 
 /**
@@ -93,6 +125,34 @@ export interface UpdateExportSuccessInput {
   suppressedCount?: number;
   /** States that were suppressed */
   suppressedStates?: string[];
+  // Quality Gate fields
+  /** Number of leads delivered after quality gate filtering */
+  deliveredCount?: number;
+  /** Number of leads rejected by quality gate */
+  rejectedByQualityCount?: number;
+  /** Minimum quality score threshold used */
+  minQualityScoreUsed?: number;
+  // Extended quality report fields
+  /** Average quality score across delivered leads */
+  avgQualityScore?: number;
+  /** Maximum quality score in export */
+  maxQualityScore?: number;
+  /** 90th percentile quality score */
+  p90QualityScore?: number;
+  /** Percentage of delivered leads with wireless phone */
+  pctWireless?: number;
+  /** Percentage of delivered leads with full address */
+  pctWithAddress?: number;
+  /** Distribution of match scores as JSON */
+  matchScoreDistribution?: Record<string, number>;
+  /** Warning message if fewer leads delivered than requested */
+  qualityGateWarning?: string;
+  /** Count of leads with quality_score >= 70 */
+  highQualityCount?: number;
+  /** Count of leads with quality_score >= 50 and < 70 */
+  mediumQualityCount?: number;
+  /** Count of leads with quality_score < 50 */
+  lowQualityCount?: number;
 }
 
 /**
@@ -181,6 +241,21 @@ export async function updateExportSuccess(
         path: input.path,
         suppressed_count: input.suppressedCount ?? 0,
         suppressed_states: input.suppressedStates ?? null,
+        // Quality Gate fields
+        delivered_count: input.deliveredCount ?? null,
+        rejected_by_quality_count: input.rejectedByQualityCount ?? null,
+        min_quality_score_used: input.minQualityScoreUsed ?? null,
+        // Extended quality report fields
+        avg_quality_score: input.avgQualityScore ?? null,
+        max_quality_score: input.maxQualityScore ?? null,
+        p90_quality_score: input.p90QualityScore ?? null,
+        pct_wireless: input.pctWireless ?? null,
+        pct_with_address: input.pctWithAddress ?? null,
+        match_score_distribution: input.matchScoreDistribution ?? null,
+        quality_gate_warning: input.qualityGateWarning ?? null,
+        high_quality_count: input.highQualityCount ?? null,
+        medium_quality_count: input.mediumQualityCount ?? null,
+        low_quality_count: input.lowQualityCount ?? null,
       })
       .eq('id', exportId);
 

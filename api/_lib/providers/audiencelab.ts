@@ -796,12 +796,17 @@ export function mapAudienceLabContactToLead(
     lead_type: effectiveScope,
     tags: input.leadRequest,
     source: 'audiencelab',
-    // New dialer-friendly phone fields
+    // Dialer-friendly phone fields
     best_phone: parsedPhones.best,
     phones_all: parsedPhones.all.join('|'),
     wireless_phones: parsedPhones.wireless.join('|'),
     landline_phones: parsedPhones.landline.join('|'),
     match_score: matchScore,
+    // Quality fields (populated by processLeadsWithQuality after filtering)
+    quality_score: 0,
+    quality_tier: 'balanced',
+    dnc_status: getField(contact, 'DNC_STATUS') || '',
+    email_validation_status: getField(contact, 'EMAIL_VALIDATION_STATUS') || '',
   };
 
   return { lead, excluded: null, missingNameOrAddress, tier, matchScore };

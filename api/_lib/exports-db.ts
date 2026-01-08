@@ -72,6 +72,10 @@ export interface CreateExportInput {
   requestPayload?: Record<string, unknown>;
   /** Number of leads requested */
   requestedCount?: number;
+  /** Quality tier used for intent targeting */
+  qualityTier?: string;
+  /** Intent pack ID applied */
+  intentPack?: string;
 }
 
 /**
@@ -137,6 +141,8 @@ export async function createExport(input: CreateExportInput): Promise<string | n
         status: input.status,
         request_payload: input.requestPayload || null,
         requested_count: input.requestedCount || null,
+        quality_tier: input.qualityTier || null,
+        intent_pack: input.intentPack || null,
       })
       .select('id')
       .single();

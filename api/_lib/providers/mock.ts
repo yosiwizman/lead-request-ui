@@ -57,6 +57,11 @@ export function generateLeads(input: GenerateInput): ProviderResult {
       wireless_phones: phone,
       landline_phones: '',
       match_score: 3,
+      // Quality fields (default values, can be updated by processLeadsWithQuality)
+      quality_score: 0,
+      quality_tier: 'balanced',
+      dnc_status: 'clean',
+      email_validation_status: '',
     });
   }
   return { ok: true, leads };

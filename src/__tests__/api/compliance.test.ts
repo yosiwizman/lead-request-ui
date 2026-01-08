@@ -84,7 +84,7 @@ describe('filterLeadsByStateCompliance', () => {
     zip: '12345',
     phone: '555-1234',
     email: 'john@example.com',
-    lead_type: 'residential',
+    lead_type: 'residential' as const,
     tags: '',
     source: 'audiencelab',
     best_phone: '555-1234',
@@ -92,6 +92,10 @@ describe('filterLeadsByStateCompliance', () => {
     wireless_phones: '555-1234',
     landline_phones: '',
     match_score: 3,
+    quality_score: 75,
+    quality_tier: 'balanced' as const,
+    dnc_status: 'clean',
+    email_validation_status: '',
   });
 
   it('does not filter for email useCase', () => {

@@ -88,7 +88,7 @@ describe('leadsToCsv', () => {
       match_score: 3,
       // Quality fields (new in migration 006)
       quality_score: 85,
-      quality_tier: 'hot',
+      quality_tier: 'hot' as const,
       dnc_status: 'clean',
       email_validation_status: 'valid',
     }];
@@ -133,7 +133,7 @@ describe('leadsToCsv', () => {
       match_score: 2,
       // Quality fields
       quality_score: 50,
-      quality_tier: 'balanced',
+      quality_tier: 'balanced' as const,
       dnc_status: '',
       email_validation_status: '',
     }];

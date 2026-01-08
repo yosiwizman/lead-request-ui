@@ -64,7 +64,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // ─────────────────────────────────────────────────────────────────────────
   // Build AudienceLab payload for debugging/observability
   // ─────────────────────────────────────────────────────────────────────────
-  const audiencePayload = buildAudiencePayload({ leadRequest, zips, scope, useCase, minMatchScore, requestedCount });
+  const { payload: audiencePayload, intentPack, qualityTier } = buildAudiencePayload({
+    leadRequest,
+    zips,
+    scope,
+    useCase,
+    minMatchScore,
+    requestedCount,
+    qualityTier: (validation.data as { qualityTier?: 'hot' | 'balanced' | 'scale' }).qualityTier,
+  });
   
   // ─────────────────────────────────────────────────────────────────────────
   // Create export record in database (status=building)
@@ -81,6 +89,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       status: 'building',
       requestPayload: audiencePayload,
       requestedCount: requestedCount ?? 200,
+      qualityTier,
+      intentPack,
     });
     logEvent('export_created', { requestId, exportId });
   } catch (dbErr) {

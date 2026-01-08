@@ -293,6 +293,47 @@
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
+/* Advanced Options Panel                                                   */
+/* ───────────────────────────────────────────────────────────────────────── */
+.advanced-options {
+  margin-bottom: 1.5rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.advanced-toggle {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background: #f8f9fa;
+  border: none;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #555;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.2s;
+}
+
+.advanced-toggle:hover {
+  background: #f0f0f0;
+}
+
+.advanced-content {
+  padding: 1rem;
+  background: white;
+  border-top: 1px solid #e0e0e0;
+}
+
+.advanced-content .form-group {
+  margin-bottom: 0;
+}
+
+.advanced-content .form-group label {
+  font-size: 0.875rem;
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
 /* Header with history button                                              */
 /* ───────────────────────────────────────────────────────────────────────── */
 .header {

@@ -50,17 +50,25 @@
 ### POST /api/leads/generate
 
 - Request JSON:
-  { "leadRequest": "string", "zipCodes": "string", "leadScope": "residential|commercial|both", "useCase": "call|email|both" }
+  { "leadRequest": "string", "zipCodes": "string", "leadScope": "residential|commercial|both", "useCase": "call|email|both", "minMatchScore": 0-3 }
 - Validation:
   - `leadRequest` required, 3–200 chars
   - `zipCodes` parsed by comma/space; each ZIP must be 5 digits; 1–200 zips
   - `leadScope` required: `residential` | `commercial` | `both`
   - `useCase` optional (defaults to `both`): `call` | `email` | `both`
+  - `minMatchScore` optional (defaults to 3 for `call`, 0 for others): 0-3
 
 **Quality Preset (useCase) Behavior:**
-- `call`: Requires phone present; excludes DNC-flagged contacts (B2C only)
+- `call`: Requires phone present; excludes DNC-flagged contacts (B2C only); filters by minMatchScore (default: 3)
 - `email`: Requires Valid(Esp) email + LAST_SEEN within 30 days
 - `both`: Either phone or email required; excludes DNC-flagged contacts (B2C only)
+
+**minMatchScore Parameter:**
+For Call Leads, filters contacts by match accuracy score:
+- `3` (default): High tier only (ADDRESS+EMAIL match) — Best for dialer campaigns
+- `2`: Medium tier and above (NAME+ADDRESS match)
+- `1`: Low tier and above (any match method)
+- `0`: No filtering by match score
 
 **Responses:**
 - **200 OK** (immediate success):
@@ -212,6 +220,7 @@ The Recipe Engine applies preset-specific rules to maximize lead quality based o
 **Call Preset:**
 - Requires phone present
 - Excludes DNC-flagged contacts (B2C/residential only; B2B ignores DNC)
+- Filters by `minMatchScore` (default: 3 = high tier only)
 - No freshness requirement
 
 **Email Preset:**
@@ -225,18 +234,23 @@ The Recipe Engine applies preset-specific rules to maximize lead quality based o
 - Excludes DNC-flagged contacts (B2C only)
 - No freshness requirement
 
-### Accuracy Tier Ranking
+### Accuracy Tier Ranking & Numeric Match Score
 
-Instead of over-filtering, the recipe engine ranks contacts by accuracy using `SKIPTRACE_MATCH_BY` (B2C) or `SKIPTRACE_B2B_MATCH_BY` (B2B):
+The recipe engine evaluates contact accuracy using `SKIPTRACE_MATCH_BY` (B2C) or `SKIPTRACE_B2B_MATCH_BY` (B2B) and assigns both a tier and numeric score:
 
-**High Tier:** ADDRESS + EMAIL match
+**High Tier (Score 3):** ADDRESS + EMAIL match
 - Most accurate; address and email both confirmed
 
-**Medium Tier:** NAME + ADDRESS match
+**Medium Tier (Score 2):** NAME + ADDRESS match
 - Good accuracy; name and address confirmed
 
-**Low Tier:** Other match methods
-- PHONE, NAME only, or no match_by data
+**Low Tier (Score 1):** Other match methods
+- PHONE, NAME only, or other match methods
+
+**No Match Data (Score 0):** No SKIPTRACE_MATCH_BY field
+- Unknown accuracy; proceed with caution
+
+For Call Leads, the `minMatchScore` filter is applied (default: 3). Contacts scoring below the threshold are excluded with `filteredLowMatchScore` tracked in diagnostics.
 
 Leads are sorted by tier (high → medium → low) before applying the 50-lead cap, ensuring the highest-quality leads are prioritized.
 
@@ -262,8 +276,10 @@ Each successful response (200 OK) includes a `quality` object with filtering met
     "filteredInvalidEmailEsp": 2,
     "filteredEmailTooOld": 1,
     "filteredDnc": 2,
+    "filteredLowMatchScore": 5,
     "missingNameOrAddressCount": 5,
-    "matchByTier": { "high": 20, "medium": 10, "low": 5 }
+    "matchByTier": { "high": 20, "medium": 10, "low": 5 },
+    "matchScoreDistribution": { "score0": 2, "score1": 10, "score2": 18, "score3": 20 }
   }
 }
 ```
@@ -276,8 +292,10 @@ Each successful response (200 OK) includes a `quality` object with filtering met
 - `filteredInvalidEmailEsp`: Excluded due to email not being Valid(Esp) (applies to `useCase=email`)
 - `filteredEmailTooOld`: Excluded due to LAST_SEEN > 30 days (applies to `useCase=email`)
 - `filteredDnc`: Excluded due to DNC (Do Not Call) flag (B2C only)
+- `filteredLowMatchScore`: Excluded due to match score below `minMatchScore` threshold (applies to `useCase=call`)
 - `missingNameOrAddressCount`: Kept contacts that are missing name or address (informational)
 - `matchByTier`: Breakdown of kept leads by accuracy tier (high/medium/low)
+- `matchScoreDistribution`: Distribution of ALL fetched contacts by score (before filtering)
 
 ### Field Coverage Diagnostics
 
@@ -359,6 +377,32 @@ The UI shows an enrichment warning when ANY of these conditions are true in `cov
 - Data append services (e.g., FullContact, Clearbit)
 - Skip tracing services for phone → name/address lookup
 - Email discovery services
+
+### CSV Export Columns
+
+The CSV export includes the following columns:
+
+**Core Lead Fields:**
+- `first_name`, `last_name`: Contact name
+- `address`, `city`, `state`, `zip`: Address information
+- `phone`: Best available phone number (E.164 format: +1XXXXXXXXXX)
+- `email`: Best available email
+- `lead_type`: `residential` or `commercial`
+- `tags`: Lead request/query string
+- `source`: Data source (`audiencelab` or `mock`)
+
+**Dialer-Friendly Phone Columns (NEW):**
+- `best_phone`: Same as `phone`, for dialer convenience
+- `phones_all`: All available phone numbers (pipe-separated, e.g., `+13055551234|+13055552222`)
+- `wireless_phones`: Wireless/mobile phones only (pipe-separated)
+- `landline_phones`: Landline phones only (pipe-separated)
+
+**Quality Column (NEW):**
+- `match_score`: Numeric quality score (0-3)
+  - `3`: High accuracy (ADDRESS+EMAIL match)
+  - `2`: Medium accuracy (NAME+ADDRESS match)
+  - `1`: Low accuracy (other match methods)
+  - `0` or empty: No match data available
 
 ### CSV Security
 

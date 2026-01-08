@@ -83,6 +83,13 @@ interface MatchByTierCounts {
   low: number
 }
 
+interface MatchScoreDistribution {
+  score0: number
+  score1: number
+  score2: number
+  score3: number
+}
+
 interface QualitySummary {
   totalFetched: number
   kept: number
@@ -91,8 +98,10 @@ interface QualitySummary {
   filteredInvalidEmailEsp: number
   filteredEmailTooOld: number
   filteredDnc: number
+  filteredLowMatchScore: number
   missingNameOrAddressCount: number
   matchByTier: MatchByTierCounts
+  matchScoreDistribution: MatchScoreDistribution
 }
 
 interface FieldCoverageBlock {
@@ -160,6 +169,8 @@ function App() {
   const [zipCodes, setZipCodes] = useState('')
   const [scope, setScope] = useState<Scope>('Residential')
   const [useCase, setUseCase] = useState<UseCase>('both')
+  const [minMatchScore, setMinMatchScore] = useState<number>(3) // Default 3 for call leads
+  const [showAdvanced, setShowAdvanced] = useState(false)
   const [status, setStatus] = useState<AppStatus>('idle')
   const [errorMessage, setErrorMessage] = useState('')
   const [signedUrl, setSignedUrl] = useState<string>('')
@@ -381,15 +392,22 @@ function App() {
     setBuildingDetails(null)
 
     try {
+      // Build request body - only include minMatchScore for call useCase if it differs from default
+      const requestBody: Record<string, unknown> = {
+        leadRequest: leadRequest.trim(),
+        zipCodes: zipCodes,
+        leadScope: scope.toLowerCase(),
+        useCase: useCase,
+      }
+      // Include minMatchScore if useCase is 'call' (explicit control) or if user changed it
+      if (useCase === 'call') {
+        requestBody.minMatchScore = minMatchScore
+      }
+      
       const res = await fetch('/api/leads/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          leadRequest: leadRequest.trim(),
-          zipCodes: zipCodes,
-          leadScope: scope.toLowerCase(),
-          useCase: useCase,
-        }),
+        body: JSON.stringify(requestBody),
       })
 
       const data = await res.json()
@@ -560,6 +578,41 @@ function App() {
             </select>
           </div>
 
+          {/* Advanced Options - only shown for Call Leads */}
+          {useCase === 'call' && (
+            <div className="advanced-options">
+              <button
+                type="button"
+                className="advanced-toggle"
+                onClick={() => setShowAdvanced(!showAdvanced)}
+              >
+                {showAdvanced ? '▼' : '▶'} Advanced Options
+              </button>
+              
+              {showAdvanced && (
+                <div className="advanced-content">
+                  <div className="form-group">
+                    <label htmlFor="minMatchScore">Minimum Match Score</label>
+                    <select
+                      id="minMatchScore"
+                      value={minMatchScore}
+                      onChange={(e) => setMinMatchScore(parseInt(e.target.value, 10))}
+                    >
+                      <option value="3">3 - High only (ADDRESS+EMAIL)</option>
+                      <option value="2">2 - Medium+ (NAME+ADDRESS)</option>
+                      <option value="1">1 - Low+ (any match)</option>
+                      <option value="0">0 - No filtering</option>
+                    </select>
+                    <p className="preset-helper">
+                      Filter leads by match accuracy. Higher scores = more reliable contact data.
+                      Default is 3 (High) for best dialer results.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           <button
             className="btn-primary"
             onClick={handleGenerate}
@@ -614,6 +667,9 @@ function App() {
                     )}
                     {qualitySummary.filteredDnc > 0 && (
                       <li>Filtered (DNC): {qualitySummary.filteredDnc}</li>
+                    )}
+                    {qualitySummary.filteredLowMatchScore > 0 && (
+                      <li>Filtered (low match score): {qualitySummary.filteredLowMatchScore}</li>
                     )}
                     {qualitySummary.missingNameOrAddressCount > 0 && (
                       <li>Missing name/address: {qualitySummary.missingNameOrAddressCount}</li>

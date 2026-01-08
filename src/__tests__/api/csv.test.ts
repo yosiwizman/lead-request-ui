@@ -75,19 +75,30 @@ describe('leadsToCsv', () => {
       city: 'Miami',
       state: 'FL',
       zip: '33101',
-      phone: '(305) 555-1234',
+      phone: '+13055551234',
       email: 'john@example.com',
       lead_type: 'residential',
       tags: 'roofing',
       source: 'audiencelab',
+      // New dialer-friendly fields
+      best_phone: '+13055551234',
+      phones_all: '+13055551234|+13055552222',
+      wireless_phones: '+13055551234',
+      landline_phones: '+13055552222',
+      match_score: 3,
     }];
 
     const csv = leadsToCsv(leads);
     const lines = csv.split('\n');
 
-    expect(lines[0]).toBe('first_name,last_name,address,city,state,zip,phone,email,lead_type,tags,source');
+    // Updated header includes new columns
+    expect(lines[0]).toBe('first_name,last_name,address,city,state,zip,phone,email,lead_type,tags,source,best_phone,phones_all,wireless_phones,landline_phones,match_score');
     expect(lines[1]).toContain('"John"');
     expect(lines[1]).toContain('"Doe"');
+    // Verify new columns are in the data row
+    // Note: phones starting with + are prefixed with ' for formula injection prevention
+    expect(lines[1]).toContain(`"'+13055551234|+13055552222"`); // phones_all (prefixed with ')
+    expect(lines[1]).toContain('"3"'); // match_score
   });
 
   it('sanitizes formula injection in lead data', () => {
@@ -98,11 +109,17 @@ describe('leadsToCsv', () => {
       city: '@MALICIOUS',
       state: 'FL',
       zip: '33101',
-      phone: '(305) 555-1234',
+      phone: '+13055551234',
       email: 'test@example.com',
       lead_type: 'residential',
       tags: 'normal',
       source: 'test',
+      // New dialer-friendly fields
+      best_phone: '+13055551234',
+      phones_all: '+13055551234',
+      wireless_phones: '+13055551234',
+      landline_phones: '',
+      match_score: 2,
     }];
 
     const csv = leadsToCsv(leads);

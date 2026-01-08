@@ -10,6 +10,22 @@ export function parseZipCodes(raw: string): string[] {
   return Array.from(new Set(valid));
 }
 
+/**
+ * Parse minMatchScore from request body.
+ * Valid values: 0, 1, 2, 3 (number or numeric string)
+ * Returns undefined if not provided (defaults will be applied later based on useCase)
+ */
+function parseMinMatchScore(raw: unknown): number | undefined {
+  if (raw === undefined || raw === null || raw === '') {
+    return undefined;
+  }
+  const num = typeof raw === 'number' ? raw : parseInt(String(raw), 10);
+  if (isNaN(num) || num < 0 || num > 3) {
+    return undefined; // Invalid values are treated as "not provided"
+  }
+  return num;
+}
+
 export function validatePayload(body: Record<string, unknown>):
   | { ok: true; data: ValidatedPayload }
   | { ok: false; error: { code: string; message: string; details?: Record<string, unknown> } } {
@@ -18,6 +34,7 @@ export function validatePayload(body: Record<string, unknown>):
   const zipCodesRaw = typeof body.zipCodes === 'string' ? body.zipCodes : '';
   const leadScopeRaw = typeof body.leadScope === 'string' ? body.leadScope.toLowerCase().trim() : '';
   const useCaseRaw = typeof body.useCase === 'string' ? body.useCase.toLowerCase().trim() : 'both';
+  const minMatchScoreRaw = body.minMatchScore;
 
   if (!leadRequest || leadRequest.length < 3 || leadRequest.length > 200) {
     return {
@@ -64,8 +81,29 @@ export function validatePayload(body: Record<string, unknown>):
     };
   }
 
+  // Parse minMatchScore (optional, defaults applied in recipe engine based on useCase)
+  const minMatchScore = parseMinMatchScore(minMatchScoreRaw);
+  
+  // Validate minMatchScore if explicitly provided with invalid value
+  if (minMatchScoreRaw !== undefined && minMatchScoreRaw !== null && minMatchScoreRaw !== '' && minMatchScore === undefined) {
+    return {
+      ok: false,
+      error: {
+        code: 'invalid_min_match_score',
+        message: 'minMatchScore must be a number between 0 and 3.',
+        details: { received: minMatchScoreRaw },
+      },
+    };
+  }
+
   return {
     ok: true,
-    data: { leadRequest, zips, scope: leadScopeRaw as LeadScope, useCase: useCaseRaw as UseCase },
+    data: { 
+      leadRequest, 
+      zips, 
+      scope: leadScopeRaw as LeadScope, 
+      useCase: useCaseRaw as UseCase,
+      minMatchScore,
+    },
   };
 }

@@ -1,4 +1,4 @@
-import type { Lead, GenerateInput, ProviderResult, LeadScope, LeadQualityDiagnostics, UseCase, FieldCoverage, FieldCoverageBlock, CoverageFieldName, MatchByTier } from '../types.js';
+import type { Lead, GenerateInput, ProviderResult, LeadScope, LeadQualityDiagnostics, UseCase, FieldCoverage, FieldCoverageBlock, CoverageFieldName, MatchByTier, MatchScoreDistribution } from '../types.js';
 import {
   AudienceLabAuthError,
   AudienceLabUpstreamError,
@@ -191,6 +191,116 @@ export function parsePhoneList(phoneList: string | undefined): string {
   return phones[0] || '';
 }
 
+/**
+ * Normalize a phone number to E.164 format.
+ * Returns empty string if invalid.
+ */
+function normalizePhone(phone: string): string {
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length === 10) {
+    return `+1${digits}`;
+  }
+  if (digits.length === 11 && digits.startsWith('1')) {
+    return `+${digits}`;
+  }
+  if (digits.length >= 10) {
+    return digits.startsWith('1') ? `+${digits}` : `+1${digits}`;
+  }
+  return '';
+}
+
+/**
+ * Result of parsing all available phones from a contact.
+ */
+export interface ParsedPhones {
+  /** All valid phone numbers (normalized to E.164) */
+  all: string[];
+  /** Wireless/mobile phone numbers only */
+  wireless: string[];
+  /** Landline phone numbers only */
+  landline: string[];
+  /** Best phone number (first wireless, then first landline, then first other) */
+  best: string;
+}
+
+/**
+ * Parse ALL available phone numbers from a contact, categorized by type.
+ * Collects phones from SKIPTRACE_WIRELESS_NUMBERS, SKIPTRACE_LANDLINE_NUMBERS,
+ * SKIPTRACE_B2B_WIRELESS, SKIPTRACE_B2B_LANDLINE, mobile_phone, and phone fields.
+ * 
+ * @param contact - The AudienceLab contact
+ * @param scope - Lead scope (commercial uses B2B fields)
+ * @returns ParsedPhones with all phones categorized
+ */
+export function parseAllPhones(contact: AudienceLabContact, scope: LeadScope): ParsedPhones {
+  const wireless: string[] = [];
+  const landline: string[] = [];
+  const other: string[] = [];
+  const seenPhones = new Set<string>();
+
+  // Helper to add phones from a comma/pipe/semicolon separated list
+  const addPhones = (phoneList: string | undefined, category: 'wireless' | 'landline' | 'other') => {
+    if (!phoneList || !phoneList.trim()) return;
+    const phones = phoneList.split(/[,|;]+/).map(p => p.trim()).filter(Boolean);
+    for (const phone of phones) {
+      const normalized = normalizePhone(phone);
+      if (normalized && !seenPhones.has(normalized)) {
+        seenPhones.add(normalized);
+        if (category === 'wireless') wireless.push(normalized);
+        else if (category === 'landline') landline.push(normalized);
+        else other.push(normalized);
+      }
+    }
+  };
+
+  if (scope === 'commercial') {
+    // B2B phone fields
+    addPhones(getField(contact, 'SKIPTRACE_B2B_WIRELESS'), 'wireless');
+    addPhones(getField(contact, 'SKIPTRACE_B2B_WIRELESS_PHONE'), 'wireless');
+    addPhones(getField(contact, 'SKIPTRACE_B2B_LANDLINE'), 'landline');
+    addPhones(getField(contact, 'SKIPTRACE_B2B_LANDLINE_PHONE'), 'landline');
+  } else {
+    // B2C phone fields
+    addPhones(getField(contact, 'SKIPTRACE_WIRELESS_NUMBERS'), 'wireless');
+    addPhones(getField(contact, 'SKIPTRACE_LANDLINE_NUMBERS'), 'landline');
+  }
+  
+  // Common fallback fields (categorized as 'other' since type is unknown)
+  addPhones(getField(contact, 'mobile_phone'), 'wireless'); // mobile_phone is likely wireless
+  addPhones(getField(contact, 'phone'), 'other');
+
+  // Combine all phones (wireless first for best ordering)
+  const all = [...wireless, ...landline, ...other];
+  
+  // Best phone: prefer wireless, then landline, then other
+  const best = wireless[0] || landline[0] || other[0] || '';
+
+  return { all, wireless, landline, best };
+}
+
+/**
+ * Convert a MatchByTier to a numeric score.
+ * - high (ADDRESS+EMAIL): 3
+ * - medium (NAME+ADDRESS): 2
+ * - low (other): 1
+ * - null/undefined: 0 (no match data)
+ */
+export function tierToNumericScore(tier: MatchByTier | null | undefined): number {
+  switch (tier) {
+    case 'high': return 3;
+    case 'medium': return 2;
+    case 'low': return 1;
+    default: return 0;
+  }
+}
+
+/**
+ * Create an empty match score distribution.
+ */
+export function emptyMatchScoreDistribution(): MatchScoreDistribution {
+  return { score0: 0, score1: 0, score2: 0, score3: 0 };
+}
+
 interface AudienceLabMembersResponse {
   data?: AudienceLabContact[];
   members?: AudienceLabContact[];
@@ -219,6 +329,8 @@ export interface RecipeConfig {
   freshnessDays: number;
   /** Use case type for logging/debugging */
   useCase: UseCase;
+  /** Minimum match score (0-3) required. 0 = no filtering. */
+  minMatchScore: number;
 }
 
 /**
@@ -228,11 +340,19 @@ export interface RecipeConfig {
  * - B2B Email: BUSINESS_EMAIL with Valid(Esp) status, LAST_SEEN within 30 days
  * - B2C Call: SKIPTRACE_WIRELESS/LANDLINE, exclude DNC=Y, use SKIPTRACE_MATCH_BY
  * - B2C Email: PERSONAL_EMAIL with Valid(Esp) status, LAST_SEEN within 30 days
+ * 
+ * @param scope - Lead scope (residential/commercial/both)
+ * @param useCase - Use case (call/email/both)
+ * @param minMatchScoreOverride - Optional override for minMatchScore (default: 3 for call, 0 for others)
  */
-export function buildRecipe(scope: LeadScope, useCase: UseCase): RecipeConfig {
+export function buildRecipe(scope: LeadScope, useCase: UseCase, minMatchScoreOverride?: number): RecipeConfig {
   const isEmailUseCase = useCase === 'email';
   const isCallUseCase = useCase === 'call';
   const isB2C = scope === 'residential';
+  
+  // Default minMatchScore: 3 for call useCase (high tier only), 0 for others
+  const defaultMinMatchScore = isCallUseCase ? 3 : 0;
+  const minMatchScore = minMatchScoreOverride !== undefined ? minMatchScoreOverride : defaultMinMatchScore;
   
   return {
     requireEmailValidEsp: isEmailUseCase,
@@ -240,6 +360,7 @@ export function buildRecipe(scope: LeadScope, useCase: UseCase): RecipeConfig {
     excludeDnc: isB2C && (isCallUseCase || useCase === 'both'),
     freshnessDays: isEmailUseCase ? 30 : 0,
     useCase,
+    minMatchScore,
   };
 }
 
@@ -361,36 +482,6 @@ function selectQualityEmail(contact: AudienceLabContact, scope: LeadScope): Emai
 }
 
 /**
- * Select best phone based on scope using AudienceLab Fields Guide.
- * B2B: SKIPTRACE_B2B_WIRELESS[_PHONE] > SKIPTRACE_B2B_LANDLINE[_PHONE] > mobile_phone > phone
- * B2C: SKIPTRACE_WIRELESS_NUMBERS > SKIPTRACE_LANDLINE_NUMBERS > mobile_phone > phone
- * 
- * Phone fields may contain comma/pipe separated lists; we extract the first valid number.
- */
-function selectQualityPhone(contact: AudienceLabContact, scope: LeadScope): string {
-  let rawPhone: string | undefined;
-  
-  if (scope === 'commercial') {
-    // B2B phone hierarchy (check alternative field names too)
-    rawPhone = getField(contact, 'SKIPTRACE_B2B_WIRELESS')
-      || getField(contact, 'SKIPTRACE_B2B_WIRELESS_PHONE')
-      || getField(contact, 'SKIPTRACE_B2B_LANDLINE')
-      || getField(contact, 'SKIPTRACE_B2B_LANDLINE_PHONE')
-      || getField(contact, 'mobile_phone')
-      || getField(contact, 'phone');
-  } else {
-    // B2C phone hierarchy
-    rawPhone = getField(contact, 'SKIPTRACE_WIRELESS_NUMBERS')
-      || getField(contact, 'SKIPTRACE_LANDLINE_NUMBERS')
-      || getField(contact, 'mobile_phone')
-      || getField(contact, 'phone');
-  }
-  
-  // Parse phone list (handles comma/pipe separated values)
-  return parsePhoneList(rawPhone);
-}
-
-/**
  * Extended exclusion reasons for recipe engine.
  */
 type ExclusionReason = 
@@ -399,7 +490,8 @@ type ExclusionReason =
   | 'invalid_email_esp' 
   | 'email_too_old' 
   | 'missing_phone' 
-  | 'missing_contact';
+  | 'missing_contact'
+  | 'low_match_score';
 
 /**
  * Quality filter result for diagnostics with tier ranking.
@@ -409,6 +501,8 @@ interface QualityFilterResult {
   excluded: ExclusionReason | null;
   missingNameOrAddress: boolean;
   tier: MatchByTier;
+  /** Numeric match score (0-3) for this contact */
+  matchScore: number;
 }
 
 /**
@@ -550,14 +644,20 @@ export function computeLeadsCoverage(leads: Lead[]): FieldCoverageBlock {
  * Map an AudienceLab contact to our Lead format with recipe-based quality filtering.
  * Uses AudienceLab Fields Guide + Recipe Engine for optimal field selection.
  * Applies recipe-based filtering:
- *   - 'call': require phone, exclude DNC for B2C, rank by match_by tier
+ *   - 'call': require phone, exclude DNC for B2C, filter by minMatchScore, rank by match_by tier
  *   - 'email': require Valid(Esp) email, check LAST_SEEN freshness
  *   - 'both': either phone or email, best of both rules
+ * 
+ * @param contact - AudienceLab contact to map
+ * @param input - Generate input with scope, useCase, and optional minMatchScore
+ * @param index - Contact index (used for 'both' scope alternation)
+ * @param minMatchScoreOverride - Optional override for minMatchScore filter
  */
 export function mapAudienceLabContactToLead(
   contact: AudienceLabContact,
   input: GenerateInput,
-  index: number
+  index: number,
+  minMatchScoreOverride?: number
 ): QualityFilterResult {
   const useCase: UseCase = input.useCase || 'both';
   
@@ -569,15 +669,21 @@ export function mapAudienceLabContactToLead(
     effectiveScope = input.scope;
   }
 
-  // Build recipe for this scope + useCase
-  const recipe = buildRecipe(effectiveScope, useCase);
+  // Build recipe for this scope + useCase (with optional minMatchScore override)
+  const recipe = buildRecipe(effectiveScope, useCase, minMatchScoreOverride);
   
-  // Compute match-by accuracy tier (used for ranking, not hard-filtering)
+  // Compute match-by accuracy tier and numeric score
   const tier = evaluateMatchByTier(contact, effectiveScope);
+  const matchScore = tierToNumericScore(tier);
+
+  // Check minMatchScore filter (applies before other filters to allow accurate diagnostics)
+  if (recipe.minMatchScore > 0 && matchScore < recipe.minMatchScore) {
+    return { lead: null, excluded: 'low_match_score', missingNameOrAddress: false, tier, matchScore };
+  }
 
   // Check DNC exclusion (B2C call/both only per recipe)
   if (recipe.excludeDnc && contact.DNC?.toUpperCase() === 'Y') {
-    return { lead: null, excluded: 'dnc', missingNameOrAddress: false, tier };
+    return { lead: null, excluded: 'dnc', missingNameOrAddress: false, tier, matchScore };
   }
 
   // Select quality email with enhanced validation info
@@ -587,33 +693,33 @@ export function mapAudienceLabContactToLead(
   // For 'email' useCase: require Valid(Esp) email per recipe
   if (recipe.requireEmailValidEsp) {
     if (!email) {
-      return { lead: null, excluded: 'invalid_email', missingNameOrAddress: false, tier };
+      return { lead: null, excluded: 'invalid_email', missingNameOrAddress: false, tier, matchScore };
     }
     if (!isValidEsp) {
-      return { lead: null, excluded: 'invalid_email_esp', missingNameOrAddress: false, tier };
+      return { lead: null, excluded: 'invalid_email_esp', missingNameOrAddress: false, tier, matchScore };
     }
     // Check LAST_SEEN freshness for email use case
     if (!isWithinFreshnessWindow(contact.LAST_SEEN, recipe.freshnessDays)) {
-      return { lead: null, excluded: 'email_too_old', missingNameOrAddress: false, tier };
+      return { lead: null, excluded: 'email_too_old', missingNameOrAddress: false, tier, matchScore };
     }
   } else {
     // For 'call' and 'both': exclude contacts with explicitly invalid emails (but allow missing)
     if (email && !emailValid) {
-      return { lead: null, excluded: 'invalid_email', missingNameOrAddress: false, tier };
+      return { lead: null, excluded: 'invalid_email', missingNameOrAddress: false, tier, matchScore };
     }
   }
 
-  // Select quality phone
-  const phone = selectQualityPhone(contact, effectiveScope);
+  // Parse ALL available phones (for dialer-friendly export)
+  const parsedPhones = parseAllPhones(contact, effectiveScope);
 
   // For 'call' useCase: require phone present per recipe
-  if (recipe.requirePhone && !phone) {
-    return { lead: null, excluded: 'missing_phone', missingNameOrAddress: false, tier };
+  if (recipe.requirePhone && !parsedPhones.best) {
+    return { lead: null, excluded: 'missing_phone', missingNameOrAddress: false, tier, matchScore };
   }
 
   // For 'both' useCase: need at least phone or email
-  if (useCase === 'both' && !phone && !email) {
-    return { lead: null, excluded: 'missing_contact', missingNameOrAddress: false, tier };
+  if (useCase === 'both' && !parsedPhones.best && !email) {
+    return { lead: null, excluded: 'missing_contact', missingNameOrAddress: false, tier, matchScore };
   }
 
   // ==========================================================================
@@ -685,14 +791,20 @@ export function mapAudienceLabContactToLead(
     city,
     state,
     zip,
-    phone,
+    phone: parsedPhones.best,
     email,
     lead_type: effectiveScope,
     tags: input.leadRequest,
     source: 'audiencelab',
+    // New dialer-friendly phone fields
+    best_phone: parsedPhones.best,
+    phones_all: parsedPhones.all.join('|'),
+    wireless_phones: parsedPhones.wireless.join('|'),
+    landline_phones: parsedPhones.landline.join('|'),
+    match_score: matchScore,
   };
 
-  return { lead, excluded: null, missingNameOrAddress, tier };
+  return { lead, excluded: null, missingNameOrAddress, tier, matchScore };
 }
 
 /**
@@ -918,6 +1030,9 @@ export async function generateLeads(
     const coverageFetched = computeContactsCoverage(allContacts, input.scope);
 
     // Map contacts to leads with recipe-based quality filtering
+    // Get minMatchScore from input if available (via ValidatedPayload extension)
+    const minMatchScore = (input as { minMatchScore?: number }).minMatchScore;
+    
     const diagnostics: LeadQualityDiagnostics = {
       totalFetched: allContacts.length,
       kept: 0,
@@ -926,14 +1041,21 @@ export async function generateLeads(
       filteredInvalidEmailEsp: 0,
       filteredEmailTooOld: 0,
       filteredDnc: 0,
+      filteredLowMatchScore: 0,
       missingNameOrAddressCount: 0,
       matchByTier: { high: 0, medium: 0, low: 0 },
+      matchScoreDistribution: emptyMatchScoreDistribution(),
     };
     
     // First pass: filter and collect leads with their tiers
     const leadsWithTier: Array<{ lead: Lead; tier: MatchByTier; missingNameOrAddress: boolean }> = [];
     for (let i = 0; i < allContacts.length; i++) {
-      const result = mapAudienceLabContactToLead(allContacts[i], input, i);
+      const result = mapAudienceLabContactToLead(allContacts[i], input, i, minMatchScore);
+      
+      // Track match score distribution for ALL contacts (before filtering)
+      const scoreKey = `score${result.matchScore}` as keyof typeof diagnostics.matchScoreDistribution;
+      diagnostics.matchScoreDistribution[scoreKey]++;
+      
       if (result.lead) {
         leadsWithTier.push({ 
           lead: result.lead, 
@@ -949,6 +1071,7 @@ export async function generateLeads(
           case 'dnc': diagnostics.filteredDnc++; break;
           case 'missing_phone': diagnostics.filteredMissingPhone++; break;
           case 'missing_contact': diagnostics.filteredMissingPhone++; break; // Count as missing phone for backwards compat
+          case 'low_match_score': diagnostics.filteredLowMatchScore++; break;
         }
       }
     }
@@ -1107,6 +1230,9 @@ export async function fetchAudienceMembers(
     const coverageFetched = computeContactsCoverage(allContacts, input.scope);
 
     // Apply recipe-based quality filtering
+    // Get minMatchScore from input if available
+    const minMatchScore = (input as { minMatchScore?: number }).minMatchScore;
+    
     const diagnostics: LeadQualityDiagnostics = {
       totalFetched: allContacts.length,
       kept: 0,
@@ -1115,14 +1241,21 @@ export async function fetchAudienceMembers(
       filteredInvalidEmailEsp: 0,
       filteredEmailTooOld: 0,
       filteredDnc: 0,
+      filteredLowMatchScore: 0,
       missingNameOrAddressCount: 0,
       matchByTier: { high: 0, medium: 0, low: 0 },
+      matchScoreDistribution: emptyMatchScoreDistribution(),
     };
     
     // First pass: filter and collect leads with their tiers
     const leadsWithTier: Array<{ lead: Lead; tier: MatchByTier; missingNameOrAddress: boolean }> = [];
     for (let i = 0; i < allContacts.length; i++) {
-      const result = mapAudienceLabContactToLead(allContacts[i], input, i);
+      const result = mapAudienceLabContactToLead(allContacts[i], input, i, minMatchScore);
+      
+      // Track match score distribution for ALL contacts
+      const scoreKey = `score${result.matchScore}` as keyof typeof diagnostics.matchScoreDistribution;
+      diagnostics.matchScoreDistribution[scoreKey]++;
+      
       if (result.lead) {
         leadsWithTier.push({ 
           lead: result.lead, 
@@ -1137,6 +1270,7 @@ export async function fetchAudienceMembers(
           case 'dnc': diagnostics.filteredDnc++; break;
           case 'missing_phone': diagnostics.filteredMissingPhone++; break;
           case 'missing_contact': diagnostics.filteredMissingPhone++; break;
+          case 'low_match_score': diagnostics.filteredLowMatchScore++; break;
         }
       }
     }

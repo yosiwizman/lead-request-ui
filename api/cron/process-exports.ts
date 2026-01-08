@@ -296,7 +296,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Validate provider configuration
     try {
       validateProviderConfig();
-    } catch (err) {
+    } catch {
       logEvent('cron_provider_config_error', { runId });
       return res.status(500).json({
         ok: false,

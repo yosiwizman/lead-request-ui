@@ -7,7 +7,7 @@
  * - Next poll calculation for background jobs
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   hasExceededMaxAttempts,
   MAX_POLL_ATTEMPTS,

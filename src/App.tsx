@@ -357,7 +357,6 @@ function App() {
       // Still building - continue polling with server-recommended backoff
       if (res.status === 202 && data.error?.code === 'provider_building') {
         const serverPollAttempts = data.error?.details?.pollAttempts ?? 0
-        const serverMaxAttempts = data.error?.details?.maxAttempts ?? MAX_POLL_ATTEMPTS
         const serverNextPoll = data.error?.details?.nextPollSeconds ?? DEFAULT_POLL_SECONDS
         
         setPollAttempts(serverPollAttempts)

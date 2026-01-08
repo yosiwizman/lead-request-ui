@@ -18,7 +18,6 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
-import { timingSafeEqual } from 'crypto';
 import { fetchAudienceMembers } from '../_lib/providers/audiencelab.js';
 import { validateProviderConfig, getProviderName } from '../_lib/providers/index.js';
 import { leadsToCsv } from '../_lib/csv.js';
@@ -30,6 +29,7 @@ import {
   type LeadExport,
 } from '../_lib/exports-db.js';
 import { filterLeadsByStateCompliance } from '../_lib/compliance.js';
+import { verifyCronSecret, CRON_AUTH_ERROR_RESPONSE } from '../_lib/cron-auth.js';
 import type { LeadScope, UseCase } from '../_lib/types.js';
 
 /** Background poll interval (minutes) */
@@ -52,55 +52,6 @@ function logEvent(event: string, data: Record<string, unknown>): void {
   console.log(JSON.stringify({ event, ts: new Date().toISOString(), ...data }));
 }
 
-/**
- * Verify cron secret from various sources.
- * Vercel Cron sends Authorization: Bearer <CRON_SECRET>
- * Manual trigger can use x-cron-secret header or ?secret query param
- */
-function verifyCronSecret(req: VercelRequest): boolean {
-  const cronSecret = process.env.CRON_SECRET;
-  
-  // If no secret configured, deny all requests
-  if (!cronSecret) {
-    console.warn('[cron/process-exports] CRON_SECRET not configured');
-    return false;
-  }
-
-  // Check Authorization header (Vercel Cron format)
-  const authHeader = req.headers.authorization;
-  if (authHeader?.startsWith('Bearer ')) {
-    const token = authHeader.slice(7);
-    return safeCompare(token, cronSecret);
-  }
-
-  // Check x-cron-secret header (manual trigger)
-  const secretHeader = req.headers['x-cron-secret'];
-  if (typeof secretHeader === 'string') {
-    return safeCompare(secretHeader, cronSecret);
-  }
-
-  // Check query param (manual trigger via curl)
-  const secretQuery = req.query?.secret;
-  if (typeof secretQuery === 'string') {
-    return safeCompare(secretQuery, cronSecret);
-  }
-
-  return false;
-}
-
-/**
- * Timing-safe string comparison.
- */
-function safeCompare(a: string, b: string): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-  try {
-    return timingSafeEqual(Buffer.from(a), Buffer.from(b));
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Get Supabase client for storage operations.
@@ -278,10 +229,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       userAgent: req.headers['user-agent'],
     });
     
-    return res.status(401).json({
-      ok: false,
-      error: { code: 'unauthorized', message: 'Invalid or missing cron secret' },
-    });
+    return res.status(401).json(CRON_AUTH_ERROR_RESPONSE);
   }
 
   // Parse query params

@@ -137,13 +137,17 @@ When max poll attempts (30) are reached but the provider is still building, the 
 
 **Note:** HTTP 410 is never returned for long builds. The provider may still be processing, so the export is kept alive for background completion.
 
-### POST /api/cron/process-exports (Internal)
+### GET /api/cron/process-exports (Internal)
 
 Background processor for long-running exports. Called by Vercel Cron every 5 minutes.
 
 **Authentication:**
-- Requires `Authorization: Bearer {CRON_SECRET}` header
-- Returns 401 if secret is missing or invalid
+Supports multiple authentication methods (in priority order):
+1. `Authorization: Bearer {CRON_SECRET}` - Vercel Cron automatic behavior when `CRON_SECRET` env var is set
+2. `x-cron-secret: {CRON_SECRET}` header - Legacy/manual testing
+3. `?secret={CRON_SECRET}` query param - Manual curl testing
+
+Returns 401 if secret is missing or invalid.
 
 **Request Body (optional):**
 ```json
@@ -342,10 +346,55 @@ Required:
 
 Optional:
 - `AUDIENCELAB_BASE_URL`: Override AudienceLab API base URL (default: `https://api.audiencelab.io`)
-- `CRON_SECRET`: Secret for cron job authentication (required for background export processing)
+- `CRON_SECRET`: Secret for cron job authentication (required for background export processing). When set in Vercel, Vercel Cron automatically sends this as `Authorization: Bearer {CRON_SECRET}`.
 - `CALL_SUPPRESS_STATES`: Comma-separated states to suppress for CALL exports (default: `TX`). Set to `"none"` or `""` to disable.
 - `BACKGROUND_POLL_MINUTES`: Interval for background export processing (default: 5)
 - `BACKGROUND_BATCH_SIZE`: Number of exports to process per cron run (default: 10, max: 20)
+
+## Cron Jobs
+
+The system uses Vercel Cron Jobs for background processing.
+
+### Endpoints
+
+| Endpoint | Schedule | Purpose |
+|----------|----------|----------|
+| `/api/cron/cleanup` | Daily | Remove expired exports (30+ days old) |
+| `/api/cron/process-exports` | Every 5 min | Complete long-running audience builds |
+
+### Authentication
+
+Vercel Cron Jobs automatically authenticate when `CRON_SECRET` is set as an environment variable. Vercel sends the secret as:
+```
+Authorization: Bearer {CRON_SECRET}
+```
+
+For manual testing, you can also use:
+```bash
+# x-cron-secret header
+curl -H "x-cron-secret: YOUR_SECRET" https://your-app.vercel.app/api/cron/cleanup
+
+# query param (less secure, use for local testing only)
+curl "https://your-app.vercel.app/api/cron/cleanup?secret=YOUR_SECRET"
+```
+
+### Configuration
+
+Cron schedules are defined in `vercel.json`:
+```json
+{
+  "crons": [
+    { "path": "/api/cron/cleanup", "schedule": "0 3 * * *" },
+    { "path": "/api/cron/process-exports", "schedule": "*/5 * * * *" }
+  ]
+}
+```
+
+### Why HTTP 410 Is Not Used for Long Builds
+
+HTTP 410 (Gone) indicates a resource has been **permanently deleted** and will never be available again. This is semantically incorrect for audience builds that are still processing - the export is not gone, it's just taking longer than expected.
+
+Instead, long builds return HTTP 202 (Accepted) with `status: 'building_long'`, indicating the request is still being processed in the background.
 
 ## Compliance: State Suppression
 

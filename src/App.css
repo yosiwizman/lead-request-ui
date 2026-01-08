@@ -629,3 +629,48 @@
   background: #d1ecf1;
   color: #0c5460;
 }
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Quality Gate UI                                                           */
+/* ───────────────────────────────────────────────────────────────────────── */
+.delivery-summary {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+  color: #333;
+}
+
+.quality-gate-tier {
+  font-size: 0.875rem;
+  color: #666;
+}
+
+.quality-gate-warning {
+  margin: 0.5rem 0 1rem;
+  padding: 0.5rem 0.75rem;
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  color: #856404;
+  text-align: left;
+}
+
+.quality-gate-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  justify-content: center;
+  margin: 0.75rem 0 1rem;
+  padding: 0.75rem;
+  background: #f8f9fa;
+  border-radius: 6px;
+}
+
+.quality-gate-stats .stat {
+  font-size: 0.8rem;
+  color: #555;
+}
+
+.quality-gate-stats .stat strong {
+  color: #2a9d2a;
+}

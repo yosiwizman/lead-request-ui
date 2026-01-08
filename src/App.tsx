@@ -131,6 +131,18 @@ interface SuppressionInfo {
   suppressedStates: string[]
 }
 
+interface QualityGateInfo {
+  deliveredCount: number
+  requestedCount: number
+  rejectedByQualityCount: number
+  minQualityScoreUsed: number
+  avgQualityScore: number
+  p90QualityScore: number
+  pctWireless: number
+  pctWithAddress: number
+  warning?: string
+}
+
 interface ExportItem {
   id: string
   createdAt: string
@@ -191,6 +203,7 @@ function App() {
   const [pollAttempts, setPollAttempts] = useState(0)
   const [nextPollSeconds, setNextPollSeconds] = useState(DEFAULT_POLL_SECONDS)
   const [suppressionInfo, setSuppressionInfo] = useState<SuppressionInfo | null>(null)
+  const [qualityGateInfo, setQualityGateInfo] = useState<QualityGateInfo | null>(null)
   
   const pollStartRef = useRef<number>(0)
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -351,6 +364,10 @@ function App() {
             suppressedStates: data.suppressedStates || [],
           })
         }
+        // Set quality gate info if present
+        if (data.qualityGate) {
+          setQualityGateInfo(data.qualityGate)
+        }
         setStatus('success')
         setBuildingDetails(null)
         return
@@ -430,6 +447,7 @@ function App() {
     setFieldCoverageExpanded(false)
     setBuildingDetails(null)
     setSuppressionInfo(null)
+    setQualityGateInfo(null)
     setPollAttempts(0)
     setNextPollSeconds(DEFAULT_POLL_SECONDS)
 
@@ -490,6 +508,10 @@ function App() {
           suppressedCount: data.suppressedCount,
           suppressedStates: data.suppressedStates || [],
         })
+      }
+      // Set quality gate info if present
+      if (data.qualityGate) {
+        setQualityGateInfo(data.qualityGate)
       }
       setStatus('success')
     } catch {
@@ -739,7 +761,28 @@ function App() {
 
           {status === 'success' && signedUrl && (
             <div className="success">
-              <p>Generated {leadCount} leads</p>
+              {/* Quality Gate delivery info */}
+              {qualityGateInfo ? (
+                <>
+                  <p className="delivery-summary">
+                    Delivered <strong>{qualityGateInfo.deliveredCount}</strong> of {qualityGateInfo.requestedCount} requested
+                    <span className="quality-gate-tier"> (Quality Gate: {qualityTier === 'hot' ? '🔥 Hot' : qualityTier === 'balanced' ? '⚖️ Balanced' : '📈 Scale'} ≥{qualityGateInfo.minQualityScoreUsed})</span>
+                  </p>
+                  {qualityGateInfo.warning && (
+                    <p className="quality-gate-warning">
+                      ⚠️ {qualityGateInfo.warning}
+                    </p>
+                  )}
+                  <div className="quality-gate-stats">
+                    <span className="stat">Avg Score: <strong>{qualityGateInfo.avgQualityScore}</strong></span>
+                    <span className="stat">P90 Score: <strong>{qualityGateInfo.p90QualityScore}</strong></span>
+                    <span className="stat">Wireless: <strong>{qualityGateInfo.pctWireless}%</strong></span>
+                    <span className="stat">With Address: <strong>{qualityGateInfo.pctWithAddress}%</strong></span>
+                  </div>
+                </>
+              ) : (
+                <p>Generated {leadCount} leads</p>
+              )}
               {suppressionInfo && suppressionInfo.suppressedCount > 0 && (
                 <p className="suppression-notice">
                   {suppressionInfo.suppressedCount} lead{suppressionInfo.suppressedCount !== 1 ? 's' : ''} suppressed

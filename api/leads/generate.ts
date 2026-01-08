@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 import { generateLeads, getProviderName } from '../_lib/providers/index.js';
+import { buildAudiencePayload } from '../_lib/providers/audiencelab.js';
 import { leadsToCsv } from '../_lib/csv.js';
 import { validatePayload } from '../_lib/validation.js';
 import { jsonError } from '../_lib/json.js';
@@ -55,10 +56,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return jsonError(res, 400, err.code, err.message, err.details);
   }
 
-  const { leadRequest, zips, scope, useCase } = validation.data;
+  const { leadRequest, zips, scope, useCase, minMatchScore, requestedCount } = validation.data;
   
-  logEvent('generate_start', { requestId, zipCount: zips.length, scope, useCase });
+  logEvent('generate_start', { requestId, zipCount: zips.length, scope, useCase, requestedCount });
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Build AudienceLab payload for debugging/observability
+  // ─────────────────────────────────────────────────────────────────────────
+  const audiencePayload = buildAudiencePayload({ leadRequest, zips, scope, useCase, minMatchScore, requestedCount });
+  
   // ─────────────────────────────────────────────────────────────────────────
   // Create export record in database (status=building)
   // ─────────────────────────────────────────────────────────────────────────
@@ -72,6 +78,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       useCase,
       requestId,
       status: 'building',
+      requestPayload: audiencePayload,
+      requestedCount: requestedCount ?? 200,
     });
     logEvent('export_created', { requestId, exportId });
   } catch (dbErr) {
@@ -82,7 +90,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Generate leads using configured provider
   let result;
   try {
-    result = await generateLeads({ leadRequest, zips, scope, useCase });
+    result = await generateLeads({ leadRequest, zips, scope, useCase, minMatchScore, requestedCount });
   } catch (err) {
     // Handle provider configuration errors (missing API key when audiencelab expected)
     if (err instanceof ProviderConfigError) {

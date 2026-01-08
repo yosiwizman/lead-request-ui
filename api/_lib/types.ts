@@ -37,6 +37,10 @@ export interface GenerateInput {
   zips: string[];
   scope: LeadScope;
   useCase?: UseCase;
+  /** Minimum match score (0-3) for filtering. */
+  minMatchScore?: number;
+  /** Number of leads to request (default 200, max 1000). */
+  requestedCount?: number;
 }
 
 export interface ValidatedPayload {
@@ -46,6 +50,8 @@ export interface ValidatedPayload {
   useCase: UseCase;
   /** Minimum match score (0-3) for filtering. Default 3 for call useCase. */
   minMatchScore?: number;
+  /** Number of leads to request (default 200, max 1000). */
+  requestedCount?: number;
 }
 
 export type Json = Record<string, unknown>;

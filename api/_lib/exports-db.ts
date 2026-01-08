@@ -30,6 +30,10 @@ export interface LeadExport {
   bucket: string | null;
   path: string | null;
   last_signed_url_at: string | null;
+  /** AudienceLab request payload (sanitized, no PII) for debugging */
+  request_payload: Record<string, unknown> | null;
+  /** Number of leads originally requested */
+  requested_count: number | null;
 }
 
 /**
@@ -44,6 +48,10 @@ export interface CreateExportInput {
   audienceId?: string;
   requestId?: string;
   status: 'building' | 'success' | 'no_results' | 'error';
+  /** AudienceLab request payload for debugging (sanitized, no PII) */
+  requestPayload?: Record<string, unknown>;
+  /** Number of leads requested */
+  requestedCount?: number;
 }
 
 /**
@@ -103,6 +111,8 @@ export async function createExport(input: CreateExportInput): Promise<string | n
         audience_id: input.audienceId || null,
         request_id: input.requestId || null,
         status: input.status,
+        request_payload: input.requestPayload || null,
+        requested_count: input.requestedCount || null,
       })
       .select('id')
       .single();

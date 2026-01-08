@@ -73,7 +73,7 @@ function getErrorMessage(error: unknown, fallback: string): string {
 
 type Scope = 'Residential' | 'Commercial' | 'Both'
 type UseCase = 'call' | 'email' | 'both'
-type AppStatus = 'idle' | 'loading' | 'building' | 'success' | 'error'
+type AppStatus = 'idle' | 'loading' | 'building' | 'building_long' | 'success' | 'error'
 type AuthStatus = 'checking' | 'authenticated' | 'unauthenticated'
 type CoverageFieldName = 'first_name' | 'last_name' | 'address' | 'city' | 'state' | 'zip' | 'phone' | 'email'
 
@@ -363,26 +363,18 @@ function App() {
         setPollAttempts(serverPollAttempts)
         setNextPollSeconds(serverNextPoll)
         
-        // Check if we've exceeded max attempts
-        if (serverPollAttempts >= serverMaxAttempts) {
-          stopPolling()
-          setErrorMessage(`Audience still building after ${serverPollAttempts} attempts. Try again later. (ID: ${details.audienceId})`)
-          setStatus('error')
-          setBuildingDetails(null)
-          return
-        }
-        
         // Schedule next poll with exponential backoff from server
         scheduleNextPoll(details, serverNextPoll)
         return
       }
 
-      // max_attempts_exceeded error from server
-      if (data.error?.code === 'max_attempts_exceeded') {
+      // Building long - exceeded max interactive attempts, moved to background processing
+      if (res.status === 202 && data.status === 'building_long') {
         stopPolling()
-        setErrorMessage(`Max polling attempts exceeded. Audience may need more time. (ID: ${details.audienceId})`)
-        setStatus('error')
-        setBuildingDetails(null)
+        setPollAttempts(data.pollAttempts ?? MAX_POLL_ATTEMPTS)
+        setNextPollSeconds(data.nextPollSeconds ?? 300)
+        setStatus('building_long')
+        // Keep buildingDetails for display but stop active polling
         return
       }
 
@@ -673,9 +665,9 @@ function App() {
           <button
             className="btn-primary"
             onClick={handleGenerate}
-            disabled={status === 'loading' || status === 'building'}
+            disabled={status === 'loading' || status === 'building' || status === 'building_long'}
           >
-            {status === 'loading' ? 'Generating...' : status === 'building' ? 'Building...' : 'Generate Leads'}
+            {status === 'loading' ? 'Generating...' : (status === 'building' || status === 'building_long') ? 'Building...' : 'Generate Leads'}
           </button>
         </div>
 
@@ -697,6 +689,31 @@ function App() {
               <p style={{ fontSize: '0.75rem', color: '#999', marginTop: '0.25rem' }}>
                 ID: {buildingDetails.audienceId.slice(0, 8)}...
               </p>
+            </div>
+          )}
+
+          {status === 'building_long' && buildingDetails && (
+            <div className="building-long-notice">
+              <p><strong>Still building in provider</strong></p>
+              <p style={{ fontSize: '0.875rem', marginTop: '0.5rem' }}>
+                This is taking longer than usual. We'll keep checking in the background every 5 minutes.
+              </p>
+              <p style={{ fontSize: '0.875rem', marginTop: '0.5rem' }}>
+                You can close this page — check <strong>Export History</strong> later to download your leads.
+              </p>
+              <p style={{ fontSize: '0.75rem', color: '#666', marginTop: '0.75rem' }}>
+                Export ID: {buildingDetails.exportId?.slice(0, 8) || buildingDetails.audienceId.slice(0, 8)}...
+              </p>
+              <button
+                className="btn-secondary"
+                style={{ marginTop: '1rem' }}
+                onClick={() => {
+                  setStatus('idle')
+                  setBuildingDetails(null)
+                }}
+              >
+                Start New Request
+              </button>
             </div>
           )}
 
@@ -868,7 +885,7 @@ function App() {
                     <div className="export-item-header">
                       <span className="export-date">{formatDate(exp.createdAt)}</span>
                       <span className={`export-status status-${exp.status}`}>
-                        {exp.status}
+                        {exp.status === 'building_long' ? 'Building (background)' : exp.status}
                       </span>
                     </div>
                     <div className="export-item-details">

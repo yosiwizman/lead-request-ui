@@ -587,3 +587,45 @@
   font-size: 0.8rem;
   color: #856404;
 }
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Building Long Notice (background processing)                             */
+/* ───────────────────────────────────────────────────────────────────────── */
+.building-long-notice {
+  background: #cce5ff;
+  border: 1px solid #4a90d9;
+  border-radius: 8px;
+  padding: 1.5rem;
+  text-align: center;
+  color: #004085;
+}
+
+.building-long-notice p {
+  margin: 0;
+}
+
+.btn-secondary {
+  padding: 0.625rem 1.25rem;
+  background: white;
+  color: #4a90d9;
+  border: 1px solid #4a90d9;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn-secondary:hover {
+  background: #f0f7ff;
+}
+
+/* Export status: building_long */
+.export-item.status-building_long {
+  border-left-color: #17a2b8;
+}
+
+.export-status.status-building_long {
+  background: #d1ecf1;
+  color: #0c5460;
+}

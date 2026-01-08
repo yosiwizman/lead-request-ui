@@ -332,6 +332,68 @@ This request will:
 3. Score and sort leads by quality (best first)
 4. Include quality metadata in CSV export
 
+## Quality Gate
+
+The Quality Gate ensures exported leads meet minimum quality thresholds based on the selected tier. It filters leads **after** quality scoring and compliance suppression, never padding with low-quality leads.
+
+### Quality Gate Thresholds
+
+| Tier | Min Quality Score | Min Match Score | Wireless Required (Call) |
+|------|------------------|-----------------|-------------------------|
+| 🔥 Hot | ≥70 | ≥5 | Yes (for call campaigns) |
+| ⚖️ Balanced | ≥50 | ≥3 | No |
+| 📈 Scale | ≥30 | ≥3 | No |
+
+### Quality Gate Behavior
+
+1. **Filter, don't pad**: If fewer leads meet the threshold than requested, the export returns only qualified leads. Never pads with lower-quality leads.
+2. **Warning on shortfall**: When `delivered_count < requested_count`, the response includes a warning message explaining the shortfall.
+3. **Sorting**: Passed leads are sorted by quality score descending (highest quality first).
+
+### Quality Gate Response Fields
+
+Successful responses include a `qualityGate` object:
+
+```json
+{
+  "qualityGate": {
+    "deliveredCount": 85,
+    "requestedCount": 100,
+    "rejectedByQualityCount": 15,
+    "minQualityScoreUsed": 70,
+    "avgQualityScore": 82,
+    "p90QualityScore": 91,
+    "pctWireless": 95,
+    "pctWithAddress": 88,
+    "warning": "Quality Gate: Delivered 85 of 100 requested. 15 leads rejected (below Hot (≥70) threshold)."
+  }
+}
+```
+
+**Fields:**
+- `deliveredCount`: Number of leads that passed the quality gate
+- `requestedCount`: Original number of leads requested
+- `rejectedByQualityCount`: Number of leads filtered out by quality gate
+- `minQualityScoreUsed`: Minimum quality score threshold for the tier
+- `avgQualityScore`: Average quality score of delivered leads
+- `p90QualityScore`: 90th percentile quality score (top 10% threshold)
+- `pctWireless`: Percentage of delivered leads with wireless phone
+- `pctWithAddress`: Percentage of delivered leads with full address
+- `warning`: Present only when `deliveredCount < requestedCount`
+
+### Database Columns (Migration 006)
+
+New columns added for Quality Gate tracking:
+
+- `delivered_count`: Leads delivered after quality gate
+- `rejected_by_quality_count`: Leads rejected by quality gate
+- `min_quality_score_used`: Threshold used for filtering
+- `p90_quality_score`: 90th percentile score
+- `pct_wireless`: % with wireless phone
+- `pct_with_address`: % with full address
+- `match_score_distribution`: JSON distribution of match scores
+- `quality_gate_warning`: Warning message if shortfall
+
 ## Common Failure Modes
 
 ### Empty/Unfiltered Audiences

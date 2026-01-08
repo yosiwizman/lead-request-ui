@@ -73,6 +73,7 @@ function getErrorMessage(error: unknown, fallback: string): string {
 
 type Scope = 'Residential' | 'Commercial' | 'Both'
 type UseCase = 'call' | 'email' | 'both'
+type QualityTier = 'hot' | 'balanced' | 'scale'
 type AppStatus = 'idle' | 'loading' | 'building' | 'building_long' | 'success' | 'error'
 type AuthStatus = 'checking' | 'authenticated' | 'unauthenticated'
 type CoverageFieldName = 'first_name' | 'last_name' | 'address' | 'city' | 'state' | 'zip' | 'phone' | 'email'
@@ -175,6 +176,7 @@ function App() {
   const [zipCodes, setZipCodes] = useState('')
   const [scope, setScope] = useState<Scope>('Residential')
   const [useCase, setUseCase] = useState<UseCase>('both')
+  const [qualityTier, setQualityTier] = useState<QualityTier>('balanced')
   const [minMatchScore, setMinMatchScore] = useState<number>(3) // Default 3 for call leads
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [status, setStatus] = useState<AppStatus>('idle')
@@ -438,6 +440,7 @@ function App() {
         zipCodes: zipCodes,
         leadScope: scope.toLowerCase(),
         useCase: useCase,
+        qualityTier: qualityTier,
       }
       // Include minMatchScore if useCase is 'call' (explicit control) or if user changed it
       if (useCase === 'call') {
@@ -624,6 +627,24 @@ function App() {
               <option value="Commercial">Commercial (B2B)</option>
               <option value="Both">Both</option>
             </select>
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="qualityTier">Lead Heat</label>
+            <select
+              id="qualityTier"
+              value={qualityTier}
+              onChange={(e) => setQualityTier(e.target.value as QualityTier)}
+            >
+              <option value="hot">🔥 Hot Leads (High intent only)</option>
+              <option value="balanced">⚖️ Balanced (High + Medium intent)</option>
+              <option value="scale">📈 Scale (More volume)</option>
+            </select>
+            <p className="preset-helper">
+              {qualityTier === 'hot' && 'Best for dialers: High-intent leads, stricter match accuracy, sorted by quality score.'}
+              {qualityTier === 'balanced' && 'Default: Mix of high and medium intent leads for steady pipeline.'}
+              {qualityTier === 'scale' && 'For volume campaigns: Includes medium and low intent, broader reach.'}
+            </p>
           </div>
 
           {/* Advanced Options - only shown for Call Leads */}

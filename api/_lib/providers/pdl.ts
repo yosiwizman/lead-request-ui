@@ -47,6 +47,11 @@ export function mapPDLPersonToLead(
     wireless_phones: phone,
     landline_phones: '',
     match_score: 0,
+    // Quality fields (default values, can be updated by processLeadsWithQuality)
+    quality_score: 0,
+    quality_tier: 'balanced',
+    dnc_status: '',
+    email_validation_status: '',
   };
 }
 

@@ -1,4 +1,4 @@
-import type { Lead, GenerateInput, ProviderResult, LeadScope, LeadQualityDiagnostics, UseCase, FieldCoverage, FieldCoverageBlock, CoverageFieldName, MatchByTier, MatchScoreDistribution } from '../types.js';
+import type { Lead, GenerateInput, ProviderResult, LeadScope, LeadQualityDiagnostics, UseCase, FieldCoverage, FieldCoverageBlock, CoverageFieldName, MatchByTier, MatchScoreDistribution, QualityTier } from '../types.js';
 import {
   AudienceLabAuthError,
   AudienceLabUpstreamError,
@@ -796,12 +796,17 @@ export function mapAudienceLabContactToLead(
     lead_type: effectiveScope,
     tags: input.leadRequest,
     source: 'audiencelab',
-    // New dialer-friendly phone fields
+    // Dialer-friendly phone fields
     best_phone: parsedPhones.best,
     phones_all: parsedPhones.all.join('|'),
     wireless_phones: parsedPhones.wireless.join('|'),
     landline_phones: parsedPhones.landline.join('|'),
     match_score: matchScore,
+    // Quality fields (populated by processLeadsWithQuality after filtering)
+    quality_score: 0,
+    quality_tier: 'balanced',
+    dnc_status: getField(contact, 'DNC_STATUS') || '',
+    email_validation_status: getField(contact, 'EMAIL_VALIDATION_STATUS') || '',
   };
 
   return { lead, excluded: null, missingNameOrAddress, tier, matchScore };
@@ -858,15 +863,41 @@ function buildContactFilters(useCase: UseCase, minMatchScoreOverride?: number): 
   return filters;
 }
 
+import {
+  resolveIntentPack,
+  buildPackedKeywords,
+  mapTierToIntentStrength,
+} from '../intent-packs.js';
+
 /**
- * Build intent/keyword filters for audience targeting
+ * Build intent/keyword filters for audience targeting.
+ *
+ * Uses intent packs to enhance keyword targeting with high-conversion terms
+ * and maps quality tier to intent_strength filter.
+ *
+ * @param leadRequest - Original user request
+ * @param qualityTier - Quality tier for intent strength mapping
+ * @returns Intent filter object for AudienceLab payload
  */
-function buildIntentFilters(leadRequest: string): Record<string, unknown> {
+function buildIntentFilters(
+  leadRequest: string,
+  qualityTier: QualityTier = 'balanced'
+): { filters: Record<string, unknown>; intentPack: string } {
+  // Resolve best intent pack for this request
+  const pack = resolveIntentPack(leadRequest);
+
+  // Build packed keywords (original + pack keywords)
+  const keywords = buildPackedKeywords(leadRequest, pack);
+
+  // Map tier to intent_strength
+  const intentStrength = mapTierToIntentStrength(qualityTier);
+
   return {
-    // Keywords for intent matching
-    keywords: leadRequest,
-    // Intent signals - target active/recent intent
-    intent_strength: ['high', 'medium'], // Filter for meaningful intent
+    filters: {
+      keywords,
+      intent_strength: intentStrength,
+    },
+    intentPack: pack.id,
   };
 }
 
@@ -898,58 +929,69 @@ function buildGeoFilters(zips: string[]): Record<string, unknown> {
 }
 
 /**
+ * Build audience creation payload result including metadata.
+ */
+export interface AudiencePayloadResult {
+  payload: Record<string, unknown>;
+  intentPack: string;
+  qualityTier: QualityTier;
+}
+
+/**
  * Build audience creation payload with full AudienceLab filtering.
- * 
+ *
  * This function builds a comprehensive payload including:
- * - Intent/keyword targeting based on lead request
+ * - Intent/keyword targeting based on lead request + intent packs
  * - B2B/B2C persona type based on scope
  * - Geographic targeting via ZIP codes
  * - Contact quality filters (phone, email, DNC, match score)
+ * - Quality tier mapping to intent_strength
  * - Requested audience size
  */
-export function buildAudiencePayload(input: GenerateInput): Record<string, unknown> {
+export function buildAudiencePayload(input: GenerateInput): AudiencePayloadResult {
   // Determine requested size (default 200, max 1000)
   const requestedCount = (input as { requestedCount?: number }).requestedCount;
   const size = Math.max(
     PAYLOAD_DEFAULTS.MIN_SIZE,
     Math.min(requestedCount ?? PAYLOAD_DEFAULTS.DEFAULT_SIZE, PAYLOAD_DEFAULTS.MAX_SIZE)
   );
-  
-  // Get useCase and minMatchScore from input
+
+  // Get useCase, minMatchScore, and qualityTier from input
   const useCase: UseCase = (input as { useCase?: UseCase }).useCase ?? 'call';
   const minMatchScore = (input as { minMatchScore?: number }).minMatchScore;
-  
-  // Build structured filters
-  const intentFilters = buildIntentFilters(input.leadRequest);
+  const qualityTier: QualityTier = (input as { qualityTier?: QualityTier }).qualityTier ?? 'balanced';
+
+  // Build structured filters with intent packs
+  const { filters: intentFilters, intentPack } = buildIntentFilters(input.leadRequest, qualityTier);
   const geoFilters = buildGeoFilters(input.zips);
   const contactFilters = buildContactFilters(useCase, minMatchScore);
-  
+
   // Build the full payload
   const payload: Record<string, unknown> = {
     // Audience metadata
     name: `Lead Request: ${input.leadRequest.slice(0, PAYLOAD_DEFAULTS.AUDIENCE_NAME_MAX_LENGTH)}`,
     description: input.leadRequest,
-    
+
     // Persona type (B2B for commercial, B2C for residential)
     persona_type: mapScopeToPersonaType(input.scope),
-    
+
     // Size - how many leads to target
     size,
-    
+
     // Filters object combines all filter types
     filters: {
-      // Intent targeting
+      // Intent targeting (with packed keywords)
       ...intentFilters,
-      
+
       // Geographic targeting
       ...geoFilters,
-      
+
       // Contact quality requirements
       ...contactFilters,
     },
   };
-  
-  return payload;
+
+  return { payload, intentPack, qualityTier };
 }
 
 export async function generateLeads(
@@ -972,9 +1014,9 @@ export async function generateLeads(
 
   try {
     // Step 1: Create an audience
-    const audiencePayload = buildAudiencePayload(input);
+    const { payload: audiencePayload } = buildAudiencePayload(input);
     const createUrl = `${BASE_URL}/audiences`;
-    
+
     const createResponse = await fetch(createUrl, {
       method: 'POST',
       headers,

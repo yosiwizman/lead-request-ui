@@ -1,3 +1,11 @@
+/**
+ * Quality tier for lead targeting.
+ * - hot: Maximum conversion focus (high intent only, stricter filters)
+ * - balanced: Default (high + medium intent)
+ * - scale: More volume (medium + low intent)
+ */
+export type QualityTier = 'hot' | 'balanced' | 'scale';
+
 export interface Lead {
   first_name: string;
   last_name: string;
@@ -20,6 +28,14 @@ export interface Lead {
   landline_phones: string;
   /** Match score 0-3 derived from SKIPTRACE_MATCH_BY tier (high=3, medium=2, low=1, none=0) */
   match_score: number | null;
+  /** Quality score 0-100 (deterministic, based on contact completeness + accuracy) */
+  quality_score: number;
+  /** Quality tier used for this lead generation */
+  quality_tier: QualityTier;
+  /** DNC status ('clean' | 'flagged' | unknown) */
+  dnc_status: string;
+  /** Email validation status if available */
+  email_validation_status: string;
 }
 
 export type LeadScope = 'residential' | 'commercial' | 'both';
@@ -41,6 +57,8 @@ export interface GenerateInput {
   minMatchScore?: number;
   /** Number of leads to request (default 200, max 1000). */
   requestedCount?: number;
+  /** Quality tier for intent targeting and filtering (default: balanced). */
+  qualityTier?: QualityTier;
 }
 
 export interface ValidatedPayload {
@@ -52,6 +70,8 @@ export interface ValidatedPayload {
   minMatchScore?: number;
   /** Number of leads to request (default 200, max 1000). */
   requestedCount?: number;
+  /** Quality tier for intent targeting and filtering (default: balanced). */
+  qualityTier?: QualityTier;
 }
 
 export type Json = Record<string, unknown>;

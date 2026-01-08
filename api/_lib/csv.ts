@@ -2,32 +2,45 @@ import type { Lead } from './types.js';
 
 /**
  * CSV column headers for lead export.
- * 
- * New dialer-friendly columns added:
- * - best_phone: Same as phone, for convenience
- * - phones_all: All available phones (pipe-separated)
- * - wireless_phones: Wireless/mobile phones only (pipe-separated)
- * - landline_phones: Landline phones only (pipe-separated)
- * - match_score: Quality score 0-3 (3=high, 2=medium, 1=low, 0=none)
+ *
+ * Rich export schema with quality metrics and contact details:
+ * - Core identity: first_name, last_name
+ * - Address: address, city, state, zip
+ * - Contact: phone, email, best_phone, phones_all, wireless_phones, landline_phones
+ * - Quality metrics: match_score, quality_score, quality_tier
+ * - Status: dnc_status, email_validation_status
+ * - Metadata: lead_type, tags, source
+ *
+ * Columns are ordered for dialer import convenience (name/contact first).
  */
 const HEADERS = [
-  'first_name', 
-  'last_name', 
-  'address', 
-  'city', 
-  'state', 
-  'zip', 
-  'phone', 
-  'email', 
-  'lead_type', 
-  'tags', 
-  'source',
-  // New dialer-friendly columns
+  // Identity
+  'first_name',
+  'last_name',
+  // Address
+  'address',
+  'city',
+  'state',
+  'zip',
+  // Primary contact
+  'phone',
+  'email',
+  // Phone details (dialer-friendly)
   'best_phone',
-  'phones_all',
   'wireless_phones',
   'landline_phones',
+  'phones_all',
+  // Quality metrics
+  'quality_score',
+  'quality_tier',
   'match_score',
+  // Status flags
+  'dnc_status',
+  'email_validation_status',
+  // Metadata
+  'lead_type',
+  'tags',
+  'source',
 ] as const;
 
 /**

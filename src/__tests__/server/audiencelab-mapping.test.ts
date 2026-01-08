@@ -414,6 +414,10 @@ describe('computeLeadsCoverage', () => {
         wireless_phones: '555-1234',
         landline_phones: '',
         match_score: 3,
+        quality_score: 80,
+        quality_tier: 'balanced',
+        dnc_status: 'clean',
+        email_validation_status: 'valid',
       },
       {
         first_name: '',
@@ -432,6 +436,10 @@ describe('computeLeadsCoverage', () => {
         wireless_phones: '555-5678',
         landline_phones: '',
         match_score: 3,
+        quality_score: 50,
+        quality_tier: 'balanced',
+        dnc_status: '',
+        email_validation_status: '',
       },
     ];
 
@@ -464,6 +472,10 @@ describe('computeLeadsCoverage', () => {
         wireless_phones: 'SECRET_PHONE',
         landline_phones: '',
         match_score: 3,
+        quality_score: 75,
+        quality_tier: 'balanced',
+        dnc_status: '',
+        email_validation_status: '',
       },
     ];
 

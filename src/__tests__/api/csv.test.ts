@@ -67,7 +67,7 @@ describe('escapeCsv', () => {
 });
 
 describe('leadsToCsv', () => {
-  it('generates CSV with header row', () => {
+  it('generates CSV with header row including quality columns', () => {
     const leads = [{
       first_name: 'John',
       last_name: 'Doe',
@@ -80,22 +80,33 @@ describe('leadsToCsv', () => {
       lead_type: 'residential',
       tags: 'roofing',
       source: 'audiencelab',
-      // New dialer-friendly fields
+      // Dialer-friendly fields
       best_phone: '+13055551234',
       phones_all: '+13055551234|+13055552222',
       wireless_phones: '+13055551234',
       landline_phones: '+13055552222',
       match_score: 3,
+      // Quality fields (new in migration 006)
+      quality_score: 85,
+      quality_tier: 'hot',
+      dnc_status: 'clean',
+      email_validation_status: 'valid',
     }];
 
     const csv = leadsToCsv(leads);
     const lines = csv.split('\n');
 
-    // Updated header includes new columns
-    expect(lines[0]).toBe('first_name,last_name,address,city,state,zip,phone,email,lead_type,tags,source,best_phone,phones_all,wireless_phones,landline_phones,match_score');
+    // Rich export header with quality columns
+    expect(lines[0]).toBe(
+      'first_name,last_name,address,city,state,zip,phone,email,best_phone,wireless_phones,landline_phones,phones_all,quality_score,quality_tier,match_score,dnc_status,email_validation_status,lead_type,tags,source'
+    );
     expect(lines[1]).toContain('"John"');
     expect(lines[1]).toContain('"Doe"');
-    // Verify new columns are in the data row
+    // Verify quality columns in data row
+    expect(lines[1]).toContain('"85"'); // quality_score
+    expect(lines[1]).toContain('"hot"'); // quality_tier
+    expect(lines[1]).toContain('"clean"'); // dnc_status
+    expect(lines[1]).toContain('"valid"'); // email_validation_status
     // Note: phones starting with + are prefixed with ' for formula injection prevention
     expect(lines[1]).toContain(`"'+13055551234|+13055552222"`); // phones_all (prefixed with ')
     expect(lines[1]).toContain('"3"'); // match_score
@@ -114,12 +125,17 @@ describe('leadsToCsv', () => {
       lead_type: 'residential',
       tags: 'normal',
       source: 'test',
-      // New dialer-friendly fields
+      // Dialer-friendly fields
       best_phone: '+13055551234',
       phones_all: '+13055551234',
       wireless_phones: '+13055551234',
       landline_phones: '',
       match_score: 2,
+      // Quality fields
+      quality_score: 50,
+      quality_tier: 'balanced',
+      dnc_status: '',
+      email_validation_status: '',
     }];
 
     const csv = leadsToCsv(leads);

@@ -32,6 +32,7 @@ Generate leads from AudienceLab based on intent and targeting criteria.
 - `zips` (required): Array of ZIP codes for geographic targeting
 - `scope` (optional): `"residential"`, `"commercial"`, or `"both"` (default: `"residential"`)
 - `useCase` (optional): `"call"`, `"email"`, or `"both"` (default: `"call"`)
+- `qualityTier` (optional): `"hot"`, `"balanced"`, or `"scale"` (default: `"balanced"`) - See [Lead Heat Quality Tiers](#lead-heat-quality-tiers)
 - `minMatchScore` (optional): Minimum match score 0-3 (default: 3 for call, 0 for email)
 - `requestedCount` (optional): Number of leads to request, 1-1000 (default: 200)
 
@@ -252,6 +253,85 @@ All requests include:
 - Maximum: 1000 leads
 - Configured via `requestedCount` parameter
 
+## Lead Heat Quality Tiers
+
+The Lead Heat system optimizes lead targeting and scoring for different campaign goals. It combines vertical-specific intent packs with deterministic quality scoring.
+
+### Quality Tier Options
+
+| Tier | Intent Strength | Use Case | Description |
+|------|-----------------|----------|-------------|
+| 🔥 `hot` | High only | Dialer-first | Maximum conversion focus. High-intent signals only, strictest match accuracy. Best for live transfer and power dialing. |
+| ⚖️ `balanced` | High + Medium | Default | Mix of quality and volume. Good for steady pipeline with balanced conversion rates. |
+| 📈 `scale` | Medium + Low | Volume campaigns | Maximum reach. Includes broader intent signals for high-volume outreach. |
+
+### Intent Packs
+
+The system automatically detects vertical from `leadRequest` and applies curated high-intent keywords:
+
+- **Remodeling**: kitchen remodel estimate, bathroom renovation contractor, home improvement, etc.
+- **Roofing**: roof repair estimate, roofing contractor near me, shingle repair, etc.
+- **HVAC**: ac repair near me, furnace repair estimate, hvac installation cost, etc.
+- **Plumbing**: plumber near me, water heater installation, drain cleaning, etc.
+- **Electrical**: electrician near me, panel upgrade cost, wiring repair, etc.
+- **Home Services** (fallback): generic home repair/contractor keywords
+
+Pack keywords are combined with the original `leadRequest` to enhance targeting without requiring users to know optimal terms.
+
+### Quality Scoring (0-100)
+
+Each lead receives a deterministic quality score based on contact completeness and accuracy:
+
+**Base Score:** 50 points
+
+**Bonuses:**
+- Match score ≥7: +20 | ≥5: +15 | ≥3: +10 | ≥1: +5
+- Wireless phone present: +20
+- Any phone present: +10 (if no wireless)
+- Full address + ZIP: +10
+- City/State only: +5
+- Validated email: +10
+- Any email with @: +5
+
+**Penalties:**
+- No phone: -40
+- Suppression flags: -25
+
+**Score Interpretation:**
+- 70+: High quality (prioritize for live transfer)
+- 50-69: Medium quality (good for sequential dialing)
+- <50: Low quality (high volume, lower conversion)
+
+### CSV Export Sorting
+
+All exports are sorted by `quality_score` descending. Highest-quality leads appear first, optimizing dialer efficiency.
+
+### New CSV Columns (Migration 006)
+
+The rich export schema includes:
+- `quality_score`: 0-100 score
+- `quality_tier`: hot/balanced/scale
+- `dnc_status`: clean/flagged/unknown
+- `email_validation_status`: valid/invalid/unknown
+
+### API Request Example
+
+```json
+{
+  "leadRequest": "kitchen remodeling",
+  "zipCodes": "33101,33130",
+  "leadScope": "residential",
+  "useCase": "call",
+  "qualityTier": "hot"
+}
+```
+
+This request will:
+1. Detect "remodeling" vertical and apply remodeling intent pack
+2. Use `intent_strength: ["high"]` for maximum conversion focus
+3. Score and sort leads by quality (best first)
+4. Include quality metadata in CSV export
+
 ## Common Failure Modes
 
 ### Empty/Unfiltered Audiences
@@ -334,6 +414,36 @@ COMMENT ON COLUMN lead_exports.next_poll_at IS 'Next scheduled poll time for bac
 CREATE INDEX IF NOT EXISTS idx_lead_exports_background_processing
 ON lead_exports (status, next_poll_at)
 WHERE status IN ('building', 'building_long');
+
+-- Migration 006_lead_quality.sql
+ALTER TABLE lead_exports
+ADD COLUMN IF NOT EXISTS quality_tier TEXT;
+
+ALTER TABLE lead_exports
+ADD COLUMN IF NOT EXISTS intent_pack TEXT;
+
+ALTER TABLE lead_exports
+ADD COLUMN IF NOT EXISTS avg_quality_score DECIMAL(5,2);
+
+ALTER TABLE lead_exports
+ADD COLUMN IF NOT EXISTS max_quality_score INT;
+
+ALTER TABLE lead_exports
+ADD COLUMN IF NOT EXISTS high_quality_count INT DEFAULT 0;
+
+ALTER TABLE lead_exports
+ADD COLUMN IF NOT EXISTS medium_quality_count INT DEFAULT 0;
+
+ALTER TABLE lead_exports
+ADD COLUMN IF NOT EXISTS low_quality_count INT DEFAULT 0;
+
+COMMENT ON COLUMN lead_exports.quality_tier IS 'Quality tier used: hot, balanced, scale';
+COMMENT ON COLUMN lead_exports.intent_pack IS 'Intent pack ID applied (remodeling, roofing, etc.)';
+COMMENT ON COLUMN lead_exports.avg_quality_score IS 'Average quality score of exported leads';
+COMMENT ON COLUMN lead_exports.max_quality_score IS 'Maximum quality score in export';
+COMMENT ON COLUMN lead_exports.high_quality_count IS 'Count of leads with score >= 70';
+COMMENT ON COLUMN lead_exports.medium_quality_count IS 'Count of leads with score 50-69';
+COMMENT ON COLUMN lead_exports.low_quality_count IS 'Count of leads with score < 50';
 ```
 
 ## Environment Variables

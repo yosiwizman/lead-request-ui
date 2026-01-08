@@ -10,6 +10,16 @@ export interface Lead {
   lead_type: string;
   tags: string;
   source: string;
+  /** Best phone number (alias for phone, for dialer convenience) */
+  best_phone: string;
+  /** All available phone numbers (pipe-separated) */
+  phones_all: string;
+  /** Wireless phone numbers only (pipe-separated) */
+  wireless_phones: string;
+  /** Landline phone numbers only (pipe-separated) */
+  landline_phones: string;
+  /** Match score 0-3 derived from SKIPTRACE_MATCH_BY tier (high=3, medium=2, low=1, none=0) */
+  match_score: number | null;
 }
 
 export type LeadScope = 'residential' | 'commercial' | 'both';
@@ -34,6 +44,8 @@ export interface ValidatedPayload {
   zips: string[];
   scope: LeadScope;
   useCase: UseCase;
+  /** Minimum match score (0-3) for filtering. Default 3 for call useCase. */
+  minMatchScore?: number;
 }
 
 export type Json = Record<string, unknown>;
@@ -236,6 +248,20 @@ export interface MatchByTierCounts {
 }
 
 /**
+ * Distribution of leads by numeric match score (0-3).
+ * - score0: No match data available
+ * - score1: Low tier (other match methods)
+ * - score2: Medium tier (NAME+ADDRESS)
+ * - score3: High tier (ADDRESS+EMAIL)
+ */
+export interface MatchScoreDistribution {
+  score0: number;
+  score1: number;
+  score2: number;
+  score3: number;
+}
+
+/**
  * Diagnostics for lead quality filtering (never includes PII).
  */
 export interface LeadQualityDiagnostics {
@@ -246,8 +272,12 @@ export interface LeadQualityDiagnostics {
   filteredInvalidEmailEsp: number;
   filteredEmailTooOld: number;
   filteredDnc: number;
+  /** Filtered due to match score below minMatchScore threshold */
+  filteredLowMatchScore: number;
   missingNameOrAddressCount: number;
   matchByTier: MatchByTierCounts;
+  /** Distribution of all fetched contacts by match score (before filtering) */
+  matchScoreDistribution: MatchScoreDistribution;
 }
 
 /**
@@ -261,8 +291,12 @@ export interface QualitySummary {
   filteredInvalidEmailEsp: number;
   filteredEmailTooOld: number;
   filteredDnc: number;
+  /** Filtered due to match score below minMatchScore threshold */
+  filteredLowMatchScore: number;
   missingNameOrAddressCount: number;
   matchByTier: MatchByTierCounts;
+  /** Distribution of all fetched contacts by match score (before filtering) */
+  matchScoreDistribution: MatchScoreDistribution;
 }
 
 /**

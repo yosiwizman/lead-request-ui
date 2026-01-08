@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mapAudienceLabContactToLead, lookupZipLocation, computeContactsCoverage, computeLeadsCoverage, buildRecipe, evaluateMatchByTier, getField, parseName, parsePhoneList } from '../../../api/_lib/providers/audiencelab';
+import { mapAudienceLabContactToLead, lookupZipLocation, computeContactsCoverage, computeLeadsCoverage, buildRecipe, evaluateMatchByTier, getField, parseName, parsePhoneList, parseAllPhones, tierToNumericScore, emptyMatchScoreDistribution } from '../../../api/_lib/providers/audiencelab';
 import type { GenerateInput, Lead } from '../../../api/_lib/types';
 
 describe('lookupZipLocation', () => {
@@ -166,19 +166,34 @@ describe('mapAudienceLabContactToLead with useCase filtering', () => {
     useCase: 'both',
   };
 
-  it('useCase=call: excludes contacts without phone', () => {
+  it('useCase=call: excludes contacts without phone (when minMatchScore=0)', () => {
     const contact = { first_name: 'Test', email: 'test@example.com' };
     const input: GenerateInput = { ...baseInput, useCase: 'call' };
-    const result = mapAudienceLabContactToLead(contact, input, 0);
+    // Pass minMatchScore=0 to test phone filtering without match score filtering
+    const result = mapAudienceLabContactToLead(contact, input, 0, 0);
     
     expect(result.lead).toBeNull();
     expect(result.excluded).toBe('missing_phone');
   });
 
-  it('useCase=call: includes contacts with phone', () => {
-    const contact = { first_name: 'Test', phone: '3055551234' };
+  it('useCase=call: includes contacts with phone and high match score', () => {
+    const contact = { 
+      first_name: 'Test', 
+      phone: '3055551234',
+      SKIPTRACE_MATCH_BY: 'ADDRESS,EMAIL', // High tier for default minMatchScore=3
+    };
     const input: GenerateInput = { ...baseInput, useCase: 'call' };
     const result = mapAudienceLabContactToLead(contact, input, 0);
+    
+    expect(result.lead).not.toBeNull();
+    expect(result.lead!.phone).toBe('+13055551234');
+  });
+
+  it('useCase=call: includes contacts with phone when minMatchScore=0', () => {
+    const contact = { first_name: 'Test', phone: '3055551234' };
+    const input: GenerateInput = { ...baseInput, useCase: 'call' };
+    // Pass minMatchScore=0 to disable score filtering
+    const result = mapAudienceLabContactToLead(contact, input, 0, 0);
     
     expect(result.lead).not.toBeNull();
     expect(result.lead!.phone).toBe('+13055551234');
@@ -619,8 +634,9 @@ describe('Recipe Engine: LAST_SEEN freshness', () => {
     
     const contact = {
       first_name: 'Test',
-      phone: '555-1234',
+      phone: '3055551234', // Valid 10-digit phone
       LAST_SEEN: oldDate.toISOString(),
+      SKIPTRACE_MATCH_BY: 'ADDRESS,EMAIL', // High tier to pass default minMatchScore=3
     };
     const callInput: GenerateInput = { ...emailInput, useCase: 'call' };
     const result = mapAudienceLabContactToLead(contact, callInput, 0);
@@ -919,5 +935,265 @@ describe('SKIPTRACE field mapping', () => {
     expect(result.lead!.first_name).toBe('Nested');
     expect(result.lead!.last_name).toBe('Name');
     expect(result.lead!.phone).toBe('+13055551234');
+  });
+});
+
+// =============================================================================
+// parseAllPhones TESTS
+// =============================================================================
+
+describe('parseAllPhones', () => {
+  it('parses B2C wireless and landline numbers', () => {
+    const contact = {
+      SKIPTRACE_WIRELESS_NUMBERS: '3055551234,3055552222',
+      SKIPTRACE_LANDLINE_NUMBERS: '3055553333',
+    };
+    const result = parseAllPhones(contact, 'residential');
+    
+    expect(result.wireless).toEqual(['+13055551234', '+13055552222']);
+    expect(result.landline).toEqual(['+13055553333']);
+    expect(result.all).toEqual(['+13055551234', '+13055552222', '+13055553333']);
+    expect(result.best).toBe('+13055551234'); // First wireless
+  });
+
+  it('parses B2B wireless and landline numbers', () => {
+    const contact = {
+      SKIPTRACE_B2B_WIRELESS: '3055551234',
+      SKIPTRACE_B2B_LANDLINE: '3055553333',
+    };
+    const result = parseAllPhones(contact, 'commercial');
+    
+    expect(result.wireless).toEqual(['+13055551234']);
+    expect(result.landline).toEqual(['+13055553333']);
+    expect(result.best).toBe('+13055551234');
+  });
+
+  it('deduplicates phone numbers', () => {
+    const contact = {
+      SKIPTRACE_WIRELESS_NUMBERS: '3055551234,3055551234', // Duplicate
+      mobile_phone: '3055551234', // Same as above
+    };
+    const result = parseAllPhones(contact, 'residential');
+    
+    expect(result.all.length).toBe(1);
+    expect(result.wireless).toEqual(['+13055551234']);
+  });
+
+  it('classifies mobile_phone as wireless', () => {
+    const contact = {
+      mobile_phone: '3055551234',
+    };
+    const result = parseAllPhones(contact, 'residential');
+    
+    expect(result.wireless).toEqual(['+13055551234']);
+    expect(result.best).toBe('+13055551234');
+  });
+
+  it('classifies phone field as other', () => {
+    const contact = {
+      phone: '3055551234',
+    };
+    const result = parseAllPhones(contact, 'residential');
+    
+    expect(result.wireless).toEqual([]);
+    expect(result.landline).toEqual([]);
+    expect(result.all).toEqual(['+13055551234']);
+  });
+
+  it('returns empty arrays for contact with no phones', () => {
+    const contact = {};
+    const result = parseAllPhones(contact, 'residential');
+    
+    expect(result.wireless).toEqual([]);
+    expect(result.landline).toEqual([]);
+    expect(result.all).toEqual([]);
+    expect(result.best).toBe('');
+  });
+
+  it('prefers wireless over landline for best phone', () => {
+    const contact = {
+      SKIPTRACE_LANDLINE_NUMBERS: '3055553333',
+      SKIPTRACE_WIRELESS_NUMBERS: '3055551234', // Added after landline
+    };
+    const result = parseAllPhones(contact, 'residential');
+    
+    expect(result.best).toBe('+13055551234'); // Wireless preferred
+  });
+});
+
+// =============================================================================
+// tierToNumericScore TESTS
+// =============================================================================
+
+describe('tierToNumericScore', () => {
+  it('returns 3 for high tier', () => {
+    expect(tierToNumericScore('high')).toBe(3);
+  });
+
+  it('returns 2 for medium tier', () => {
+    expect(tierToNumericScore('medium')).toBe(2);
+  });
+
+  it('returns 1 for low tier', () => {
+    expect(tierToNumericScore('low')).toBe(1);
+  });
+
+  it('returns 0 for null', () => {
+    expect(tierToNumericScore(null)).toBe(0);
+  });
+
+  it('returns 0 for undefined', () => {
+    expect(tierToNumericScore(undefined)).toBe(0);
+  });
+});
+
+// =============================================================================
+// emptyMatchScoreDistribution TESTS
+// =============================================================================
+
+describe('emptyMatchScoreDistribution', () => {
+  it('returns all zeros', () => {
+    const result = emptyMatchScoreDistribution();
+    expect(result).toEqual({ score0: 0, score1: 0, score2: 0, score3: 0 });
+  });
+});
+
+// =============================================================================
+// minMatchScore filtering TESTS
+// =============================================================================
+
+describe('minMatchScore filtering', () => {
+  const baseInput: GenerateInput = {
+    leadRequest: 'roofing',
+    zips: ['33101'],
+    scope: 'residential',
+    useCase: 'call',
+  };
+
+  it('filters contacts with low match score when minMatchScore=3', () => {
+    const contact = {
+      phone: '3055551234',
+      SKIPTRACE_MATCH_BY: 'PHONE', // Low tier
+    };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0, 3);
+    
+    expect(result.lead).toBeNull();
+    expect(result.excluded).toBe('low_match_score');
+    expect(result.matchScore).toBe(1);
+  });
+
+  it('accepts high tier contact when minMatchScore=3', () => {
+    const contact = {
+      phone: '3055551234',
+      SKIPTRACE_MATCH_BY: 'ADDRESS,EMAIL', // High tier
+    };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0, 3);
+    
+    expect(result.lead).not.toBeNull();
+    expect(result.matchScore).toBe(3);
+  });
+
+  it('accepts medium tier contact when minMatchScore=2', () => {
+    const contact = {
+      phone: '3055551234',
+      SKIPTRACE_MATCH_BY: 'NAME,ADDRESS', // Medium tier
+    };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0, 2);
+    
+    expect(result.lead).not.toBeNull();
+    expect(result.matchScore).toBe(2);
+  });
+
+  it('accepts all contacts when minMatchScore=0', () => {
+    const contact = {
+      phone: '3055551234',
+      // No SKIPTRACE_MATCH_BY = low tier
+    };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0, 0);
+    
+    expect(result.lead).not.toBeNull();
+    expect(result.matchScore).toBe(1); // Low tier
+  });
+
+  it('includes match_score in lead object', () => {
+    const contact = {
+      phone: '3055551234',
+      SKIPTRACE_MATCH_BY: 'ADDRESS,EMAIL',
+    };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0, 0);
+    
+    expect(result.lead).not.toBeNull();
+    expect(result.lead!.match_score).toBe(3);
+  });
+});
+
+// =============================================================================
+// Dialer-friendly phone fields TESTS
+// =============================================================================
+
+describe('Dialer-friendly phone fields', () => {
+  const baseInput: GenerateInput = {
+    leadRequest: 'roofing',
+    zips: ['33101'],
+    scope: 'residential',
+    useCase: 'both',
+  };
+
+  it('populates all phone fields in lead', () => {
+    const contact = {
+      SKIPTRACE_WIRELESS_NUMBERS: '3055551234,3055552222',
+      SKIPTRACE_LANDLINE_NUMBERS: '3055553333',
+    };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
+    
+    expect(result.lead).not.toBeNull();
+    expect(result.lead!.phone).toBe('+13055551234');
+    expect(result.lead!.best_phone).toBe('+13055551234');
+    expect(result.lead!.phones_all).toBe('+13055551234|+13055552222|+13055553333');
+    expect(result.lead!.wireless_phones).toBe('+13055551234|+13055552222');
+    expect(result.lead!.landline_phones).toBe('+13055553333');
+  });
+
+  it('handles empty phone fields', () => {
+    const contact = {
+      email: 'test@example.com',
+    };
+    const result = mapAudienceLabContactToLead(contact, baseInput, 0);
+    
+    expect(result.lead).not.toBeNull();
+    expect(result.lead!.phones_all).toBe('');
+    expect(result.lead!.wireless_phones).toBe('');
+    expect(result.lead!.landline_phones).toBe('');
+  });
+});
+
+// =============================================================================
+// buildRecipe minMatchScore TESTS
+// =============================================================================
+
+describe('buildRecipe minMatchScore', () => {
+  it('defaults minMatchScore to 3 for call useCase', () => {
+    const recipe = buildRecipe('residential', 'call');
+    expect(recipe.minMatchScore).toBe(3);
+  });
+
+  it('defaults minMatchScore to 0 for email useCase', () => {
+    const recipe = buildRecipe('residential', 'email');
+    expect(recipe.minMatchScore).toBe(0);
+  });
+
+  it('defaults minMatchScore to 0 for both useCase', () => {
+    const recipe = buildRecipe('residential', 'both');
+    expect(recipe.minMatchScore).toBe(0);
+  });
+
+  it('allows override of minMatchScore', () => {
+    const recipe = buildRecipe('residential', 'call', 1);
+    expect(recipe.minMatchScore).toBe(1);
+  });
+
+  it('allows override to 0', () => {
+    const recipe = buildRecipe('residential', 'call', 0);
+    expect(recipe.minMatchScore).toBe(0);
   });
 });

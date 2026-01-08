@@ -9,6 +9,16 @@ import type { LeadQualityDiagnostics, FieldCoverage } from './types.js';
 /**
  * Export record as stored in the database.
  */
+/**
+ * Valid export status values.
+ * - 'building': Initial build in progress (interactive polling)
+ * - 'building_long': Build taking longer than expected (background processing)
+ * - 'success': Export completed successfully
+ * - 'no_results': Provider returned no matching leads
+ * - 'error': Terminal failure (auth error, provider error, etc.)
+ */
+export type ExportStatus = 'building' | 'building_long' | 'success' | 'no_results' | 'error';
+
 export interface LeadExport {
   id: string;
   created_at: string;
@@ -20,7 +30,7 @@ export interface LeadExport {
   use_case: string;
   audience_id: string | null;
   request_id: string | null;
-  status: 'building' | 'success' | 'no_results' | 'error';
+  status: ExportStatus;
   error_code: string | null;
   error_message: string | null;
   total_fetched: number | null;
@@ -42,6 +52,8 @@ export interface LeadExport {
   suppressed_count: number;
   /** States that were suppressed */
   suppressed_states: string[] | null;
+  /** When background processor should next check this export */
+  next_poll_at: string | null;
 }
 
 /**
@@ -471,4 +483,103 @@ export async function updateExportSuppression(
     console.error('Export DB error (updateSuppression):', err);
     return false;
   }
+}
+
+/**
+ * Transition an export to building_long status for background processing.
+ * Called when interactive polling exceeds max attempts but provider is still building.
+ */
+export async function updateExportBuildingLong(
+  exportId: string,
+  nextPollMinutes: number = 5
+): Promise<boolean> {
+  try {
+    const supabase = getSupabaseClient();
+    const nextPollAt = new Date(Date.now() + nextPollMinutes * 60 * 1000).toISOString();
+    
+    const { error } = await supabase
+      .from('lead_exports')
+      .update({
+        status: 'building_long',
+        next_poll_at: nextPollAt,
+      })
+      .eq('id', exportId);
+    
+    if (error) {
+      console.error('Failed to update export to building_long:', error.message);
+      return false;
+    }
+    
+    return true;
+  } catch (err) {
+    console.error('Export DB error (updateBuildingLong):', err);
+    return false;
+  }
+}
+
+/**
+ * Find exports that need background processing.
+ * Returns exports with status 'building' or 'building_long' where next_poll_at is null or past.
+ */
+export async function findPendingBackgroundExports(limit: number = 10): Promise<LeadExport[]> {
+  try {
+    const supabase = getSupabaseClient();
+    const now = new Date().toISOString();
+    
+    const { data, error } = await supabase
+      .from('lead_exports')
+      .select('*')
+      .in('status', ['building', 'building_long'])
+      .or(`next_poll_at.is.null,next_poll_at.lte.${now}`)
+      .order('created_at', { ascending: true })
+      .limit(limit);
+    
+    if (error) {
+      console.error('Failed to find pending background exports:', error.message);
+      return [];
+    }
+    
+    return (data || []) as LeadExport[];
+  } catch (err) {
+    console.error('Export DB error (findPendingBackgroundExports):', err);
+    return [];
+  }
+}
+
+/**
+ * Update next_poll_at for scheduling the next background check.
+ */
+export async function updateNextPollAt(
+  exportId: string,
+  nextPollMinutes: number = 5
+): Promise<boolean> {
+  try {
+    const supabase = getSupabaseClient();
+    const nextPollAt = new Date(Date.now() + nextPollMinutes * 60 * 1000).toISOString();
+    
+    const { error } = await supabase
+      .from('lead_exports')
+      .update({
+        next_poll_at: nextPollAt,
+        last_polled_at: new Date().toISOString(),
+      })
+      .eq('id', exportId);
+    
+    if (error) {
+      console.error('Failed to update next_poll_at:', error.message);
+      return false;
+    }
+    
+    return true;
+  } catch (err) {
+    console.error('Export DB error (updateNextPollAt):', err);
+    return false;
+  }
+}
+
+/**
+ * Get full export details including all fields needed for background processing.
+ */
+export async function getExportForProcessing(id: string): Promise<LeadExport | null> {
+  return getExport(id);
 }

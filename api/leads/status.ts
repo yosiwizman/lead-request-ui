@@ -23,6 +23,7 @@ import {
   updateExportError,
   incrementPollAttempts,
   getExport,
+  updateExportBuildingLong,
 } from '../_lib/exports-db.js';
 import {
   filterLeadsByStateCompliance,
@@ -38,6 +39,9 @@ function logEvent(event: string, data: Record<string, unknown>): void {
   console.log(JSON.stringify({ event, ts: new Date().toISOString(), ...data }));
 }
 
+/** Background poll interval for long builds (5 minutes) */
+const BACKGROUND_POLL_MINUTES = 5;
+
 /**
  * POST /api/leads/status
  * 
@@ -49,13 +53,13 @@ function logEvent(event: string, data: Record<string, unknown>): void {
  * 
  * Responses:
  *   200: Success with signedUrl, count, suppressedCount
- *   202: Still building, poll again (includes nextPollSeconds with exponential backoff)
- *   404: Definitively no results after max attempts
- *   410: Max poll attempts exceeded (hard cap: 30)
- *   4xx/5xx: Various errors
+ *   202: Still building (includes nextPollSeconds with exponential backoff)
+ *   202: Building long - exceeded max attempts, moved to background processing
+ *   404: Definitively no results
+ *   4xx/5xx: Various errors (only for terminal failures)
  * 
  * Polling uses Fibonacci-based backoff: 3, 5, 8, 13, 21, 34, 55, 60s (capped)
- * After 30 attempts, returns 410 Gone with actionable error.
+ * After 30 attempts, transitions to 'building_long' for background processing (NOT error).
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Require authentication (returns non-null if 401 sent)
@@ -135,32 +139,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
   
   // ─────────────────────────────────────────────────────────────────────────
-  // Check if max poll attempts exceeded (hard cap)
+  // Check if max poll attempts exceeded - transition to background processing
+  // DO NOT return 410 or mark as error - the provider may still be building
   // ─────────────────────────────────────────────────────────────────────────
   if (hasExceededMaxAttempts(currentPollAttempts)) {
-    logEvent('status_max_attempts_exceeded', { requestId, exportId, attempts: currentPollAttempts });
+    logEvent('status_transition_to_building_long', { requestId, exportId, attempts: currentPollAttempts });
     
-    // Mark export as failed
+    // Transition to building_long status for background processing
     if (exportId) {
-      updateExportError(exportId, {
-        status: 'error',
-        errorCode: 'max_poll_attempts',
-        errorMessage: `Audience build timed out after ${currentPollAttempts} poll attempts`,
-      }).catch(console.error);
+      await updateExportBuildingLong(exportId, BACKGROUND_POLL_MINUTES);
     }
     
-    return res.status(410).json({
+    // Return 202 with building_long status - NOT an error
+    return res.status(202).json({
       ok: false,
-      error: {
-        code: 'max_poll_attempts',
-        message: `Audience build timed out after ${MAX_POLL_ATTEMPTS} poll attempts. The audience may still be processing in AudienceLab. Try again later or create a new request.`,
-        details: {
-          audienceId,
-          exportId,
-          attempts: currentPollAttempts,
-          maxAttempts: MAX_POLL_ATTEMPTS,
-        },
-      },
+      status: 'building_long',
+      message: 'Still building in provider. We\'ll keep checking in the background. You can close this page and check Export History later.',
+      exportId,
+      audienceId,
+      pollAttempts: currentPollAttempts,
+      maxAttempts: MAX_POLL_ATTEMPTS,
+      nextPollSeconds: BACKGROUND_POLL_MINUTES * 60, // 5 minutes for background
+      canResume: true,
     });
   }
 

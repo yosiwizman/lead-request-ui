@@ -117,21 +117,67 @@ Poll for audience build completion with exponential backoff.
 }
 ```
 
-**Response (Timeout - HTTP 410):**
+**Response (Building Long - HTTP 202):**
+
+When max poll attempts (30) are reached but the provider is still building, the export transitions to background processing:
+
 ```json
 {
   "ok": false,
-  "error": {
-    "code": "max_poll_attempts",
-    "message": "Audience build timed out after 30 poll attempts.",
-    "details": {
-      "audienceId": "aud-123",
-      "attempts": 30,
-      "maxAttempts": 30
-    }
-  }
+  "status": "building_long",
+  "message": "Still building in provider. We'll keep checking in the background. You can close this page and check Export History later.",
+  "exportId": "uuid-...",
+  "audienceId": "aud-123",
+  "pollAttempts": 30,
+  "maxAttempts": 30,
+  "nextPollSeconds": 300,
+  "canResume": true
 }
 ```
+
+**Note:** HTTP 410 is never returned for long builds. The provider may still be processing, so the export is kept alive for background completion.
+
+### POST /api/cron/process-exports (Internal)
+
+Background processor for long-running exports. Called by Vercel Cron every 5 minutes.
+
+**Authentication:**
+- Requires `Authorization: Bearer {CRON_SECRET}` header
+- Returns 401 if secret is missing or invalid
+
+**Request Body (optional):**
+```json
+{
+  "batchSize": 10,
+  "dryRun": false
+}
+```
+
+**Parameters:**
+- `batchSize` (optional): Number of exports to process per run, 1-20 (default: 10)
+- `dryRun` (optional): If true, query but don't update exports (default: false)
+
+**Response:**
+```json
+{
+  "ok": true,
+  "processed": 3,
+  "succeeded": 2,
+  "failed": 0,
+  "stillBuilding": 1,
+  "results": [
+    { "exportId": "uuid-1", "status": "success" },
+    { "exportId": "uuid-2", "status": "success" },
+    { "exportId": "uuid-3", "status": "building" }
+  ]
+}
+```
+
+**Behavior:**
+1. Queries exports with status `building` or `building_long` where `next_poll_at <= now`
+2. For each export: checks provider, completes if ready, schedules next poll if still building
+3. Applies compliance filtering when completing exports
+4. Updates `next_poll_at` to `now + 5 minutes` for still-building exports
 
 ### GET /api/debug/generation?id={exportId}
 
@@ -231,6 +277,16 @@ All requests include:
 2. Backoff sequence: 3, 5, 8, 13, 21, 34, 55, 60 (capped)
 3. Hard cap: 30 attempts (~25 minutes total)
 4. Use `nextPollSeconds` from response for timing
+5. After 30 attempts, export transitions to `building_long` for background processing
+
+### Long-Running Builds
+**Status:** `building_long` (HTTP 202)
+**Behavior:** When polling exceeds 30 attempts, the export is handed off to background processing:
+- Status transitions to `building_long`
+- Vercel Cron checks every 5 minutes via `/api/cron/process-exports`
+- Export completes automatically when provider finishes
+- User can check Export History for completion
+- No error is shown - the export remains active
 
 ## Database Schema
 
@@ -264,6 +320,16 @@ COMMENT ON COLUMN lead_exports.poll_attempts IS 'Number of status poll attempts 
 COMMENT ON COLUMN lead_exports.last_polled_at IS 'Timestamp of last poll attempt';
 COMMENT ON COLUMN lead_exports.suppressed_count IS 'Count of leads suppressed by compliance filters';
 COMMENT ON COLUMN lead_exports.suppressed_states IS 'States suppressed for compliance';
+
+-- Migration 005_long_build_async.sql
+ALTER TABLE lead_exports
+ADD COLUMN IF NOT EXISTS next_poll_at TIMESTAMPTZ;
+
+COMMENT ON COLUMN lead_exports.next_poll_at IS 'Next scheduled poll time for background processing';
+
+CREATE INDEX IF NOT EXISTS idx_lead_exports_background_processing
+ON lead_exports (status, next_poll_at)
+WHERE status IN ('building', 'building_long');
 ```
 
 ## Environment Variables
@@ -276,8 +342,10 @@ Required:
 
 Optional:
 - `AUDIENCELAB_BASE_URL`: Override AudienceLab API base URL (default: `https://api.audiencelab.io`)
-- `CRON_SECRET`: Secret for cron job authentication
+- `CRON_SECRET`: Secret for cron job authentication (required for background export processing)
 - `CALL_SUPPRESS_STATES`: Comma-separated states to suppress for CALL exports (default: `TX`). Set to `"none"` or `""` to disable.
+- `BACKGROUND_POLL_MINUTES`: Interval for background export processing (default: 5)
+- `BACKGROUND_BATCH_SIZE`: Number of exports to process per cron run (default: 10, max: 20)
 
 ## Compliance: State Suppression
 

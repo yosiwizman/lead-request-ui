@@ -226,7 +226,7 @@ AND column_name IN ('poll_attempts', 'last_polled_at', 'suppressed_count', 'supp
 | 003 | Add request_payload, requested_count | #20 | Applied |
 | 004 | Add poll_attempts, last_polled_at, suppressed_count, suppressed_states | #21 | Applied |
 | 005 | Add next_poll_at, background processing index | #22 | Applied |
-| 006 | Lead quality + quality gate columns | #25 | **Pending** |
+| 006 | Lead quality + quality gate columns | #25 | Applied |
 
 ---
 
